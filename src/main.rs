@@ -19,7 +19,9 @@ struct Cli {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
+    let mut config = epoch::config::Config::load()?;
+    config.merge_cli_args(cli.log_file, cli.stdin, cli.parser);
     Ok(())
 }
 
