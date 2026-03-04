@@ -1,9 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
-use crate::app::TrainingState;
+use crate::app::App;
 
-pub fn render_metrics(_frame: &mut Frame, _area: Rect, _training: &TrainingState) {
+pub fn render(_frame: &mut Frame, _area: Rect, _app: &App) {
     todo!()
 }
 

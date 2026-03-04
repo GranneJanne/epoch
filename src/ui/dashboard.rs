@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 
 use crate::app::App;
 
-pub fn render_dashboard(_frame: &mut Frame, _area: Rect, _app: &App) {
+pub fn render(_frame: &mut Frame, _area: Rect, _app: &App) {
     todo!()
 }
 

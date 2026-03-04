@@ -1,9 +1,9 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
-use crate::app::SystemState;
+use crate::app::App;
 
-pub fn render_system(_frame: &mut Frame, _area: Rect, _system: &SystemState) {
+pub fn render(_frame: &mut Frame, _area: Rect, _app: &App) {
     todo!()
 }
 
