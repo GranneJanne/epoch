@@ -1,0 +1,10 @@
+/target
+.sisyphus/
+AGENTS.md
+.opencode/
+.claude/
+.cursor/
+*.swp
+*.swo
+.DS_Store
+*.log

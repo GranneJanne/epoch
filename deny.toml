@@ -1,0 +1,38 @@
+[advisories]
+version = 2
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+notice = "warn"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+deny = ["GPL-2.0", "GPL-3.0", "AGPL-3.0"]
+
+[licenses.clarify]
+ring = "ISC AND MIT AND OpenSSL"
+
+[bans]
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    # Each entry can be just a crate name, or a crate name and range as well.
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-git = []
