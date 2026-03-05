@@ -60,6 +60,41 @@ impl LogParser for RegexParser {
             }
         }
 
+        if let Some(eval_loss_match) = captures.name("eval_loss")
+            && let Ok(val) = eval_loss_match.as_str().parse::<f64>()
+        {
+            metrics.eval_loss = Some(val);
+            has_any_field = true;
+        }
+
+        if let Some(grad_norm_match) = captures.name("grad_norm")
+            && let Ok(val) = grad_norm_match.as_str().parse::<f64>()
+        {
+            metrics.grad_norm = Some(val);
+            has_any_field = true;
+        }
+
+        if let Some(samples_match) = captures.name("samples_per_second")
+            && let Ok(val) = samples_match.as_str().parse::<f64>()
+        {
+            metrics.samples_per_second = Some(val);
+            has_any_field = true;
+        }
+
+        if let Some(steps_match) = captures.name("steps_per_second")
+            && let Ok(val) = steps_match.as_str().parse::<f64>()
+        {
+            metrics.steps_per_second = Some(val);
+            has_any_field = true;
+        }
+
+        if let Some(tokens_ps_match) = captures.name("tokens_per_second")
+            && let Ok(val) = tokens_ps_match.as_str().parse::<f64>()
+        {
+            metrics.tokens_per_second = Some(val);
+            has_any_field = true;
+        }
+
         if let Some(tokens_match) = captures.name("tokens") {
             if let Ok(val) = tokens_match.as_str().parse::<u64>() {
                 metrics.tokens = Some(val);

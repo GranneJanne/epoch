@@ -3,10 +3,11 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub tick_rate_ms: u64,
     pub history_size: usize,
+    pub stale_after_secs: u64,
     pub parser: String,
     pub regex_pattern: Option<String>,
     pub log_file: Option<PathBuf>,
@@ -18,6 +19,7 @@ impl Default for Config {
         Self {
             tick_rate_ms: 250,
             history_size: 300,
+            stale_after_secs: 10,
             parser: "auto".to_string(),
             regex_pattern: None,
             log_file: None,
@@ -74,6 +76,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.tick_rate_ms, 250);
         assert_eq!(config.history_size, 300);
+        assert_eq!(config.stale_after_secs, 10);
         assert_eq!(config.parser, "auto");
     }
 
@@ -82,6 +85,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.tick_rate_ms, 250);
         assert_eq!(config.history_size, 300);
+        assert_eq!(config.stale_after_secs, 10);
         assert_eq!(config.parser, "auto");
         assert!(config.regex_pattern.is_none());
         assert!(config.log_file.is_none());
@@ -93,11 +97,13 @@ mod tests {
         let toml_str = r#"
             tick_rate_ms = 100
             history_size = 500
+            stale_after_secs = 20
             parser = "jsonl"
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tick_rate_ms, 100);
         assert_eq!(config.history_size, 500);
+        assert_eq!(config.stale_after_secs, 20);
         assert_eq!(config.parser, "jsonl");
     }
 
@@ -107,7 +113,14 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tick_rate_ms, 100);
         assert_eq!(config.history_size, 300); // default
+        assert_eq!(config.stale_after_secs, 10); // default
         assert_eq!(config.parser, "auto"); // default
+    }
+
+    #[test]
+    fn test_config_stale_after_secs_default() {
+        let config = Config::default();
+        assert_eq!(config.stale_after_secs, 10);
     }
 
     #[test]
@@ -117,13 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn test_config_unknown_fields_rejected() {
+    fn test_config_unknown_fields_accepted() {
         let toml_str = r#"
             tick_rate_ms = 100
             unknown_field = "oops"
         "#;
         let result: Result<Config, _> = toml::from_str(toml_str);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -1,11 +1,11 @@
 [package]
 name = "epoch"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.86.0"
 description = "Terminal-based real-time monitoring dashboard for AI/ML training runs"
 license = "MIT"
-repository = "https://github.com/williamcotton/epoch"
+repository = "https://github.com/grannejanne/epoch"
 readme = "README.md"
 keywords = ["tui", "machine-learning", "monitoring", "gpu", "training"]
 categories = ["command-line-utilities", "visualization"]
@@ -26,6 +26,10 @@ sysinfo = "0.38"
 nvml-wrapper = { version = "0.12", optional = true }
 notify = "8"
 regex = "1"
+csv = "1"
+ignore = "0.4"
+nucleo = "0.5"
+nucleo-matcher = "0.3"
 strum = { version = "0.26", features = ["derive"] }
 directories = "6.0"
 

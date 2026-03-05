@@ -8,11 +8,3 @@ use color_eyre::Result;
 pub trait Collector {
     async fn collect(&mut self) -> Result<()>;
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_placeholder() {
-        assert!(true);
-    }
-}

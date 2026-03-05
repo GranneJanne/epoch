@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use color_eyre::{Result, eyre::ContextCompat};
 use notify::Watcher;
@@ -8,13 +9,128 @@ use tokio::task::JoinHandle;
 
 use crate::config::Config;
 use crate::parsers::LogParser;
+use crate::parsers::csv::CsvParser;
+use crate::parsers::detect_parser;
+use crate::parsers::hf_trainer::parse_trainer_state;
 use crate::parsers::jsonl::JsonlParser;
 use crate::parsers::regex_parser::RegexParser;
 use crate::types::TrainingMetrics;
 
+struct CsvBootstrapParser {
+    parser: Mutex<Option<CsvParser>>,
+}
+
+impl CsvBootstrapParser {
+    fn new() -> Self {
+        Self {
+            parser: Mutex::new(None),
+        }
+    }
+}
+
+impl LogParser for CsvBootstrapParser {
+    fn parse_line(&self, line: &str) -> Result<Option<TrainingMetrics>> {
+        let mut guard = self
+            .parser
+            .lock()
+            .map_err(|_| color_eyre::eyre::eyre!("csv parser mutex poisoned"))?;
+
+        if let Some(parser) = guard.as_ref() {
+            return parser.parse_line(line);
+        }
+
+        if let Ok(parser) = CsvParser::new(line) {
+            *guard = Some(parser);
+        }
+
+        Ok(None)
+    }
+}
+
+enum AutoState {
+    Undetected,
+    Jsonl,
+    Csv(CsvParser),
+}
+
+struct AutoDetectingParser {
+    state: Mutex<AutoState>,
+}
+
+impl AutoDetectingParser {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(AutoState::Undetected),
+        }
+    }
+}
+
+impl LogParser for AutoDetectingParser {
+    fn parse_line(&self, line: &str) -> Result<Option<TrainingMetrics>> {
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|_| color_eyre::eyre::eyre!("auto parser mutex poisoned"))?;
+
+        match &mut *guard {
+            AutoState::Undetected => {
+                let jsonl = JsonlParser;
+                if let Some(metrics) = jsonl.parse_line(line)? {
+                    *guard = AutoState::Jsonl;
+                    return Ok(Some(metrics));
+                }
+
+                if let Ok(csv) = CsvParser::new(line) {
+                    *guard = AutoState::Csv(csv);
+                    return Ok(None);
+                }
+
+                Ok(None)
+            }
+            AutoState::Jsonl => JsonlParser.parse_line(line),
+            AutoState::Csv(csv) => csv.parse_line(line),
+        }
+    }
+}
+
+fn read_sample_lines(path: &PathBuf, max_lines: usize) -> Vec<String> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return vec![];
+    };
+
+    BufReader::new(file)
+        .lines()
+        .map_while(|line_result| line_result.ok())
+        .take(max_lines)
+        .collect()
+}
+
+fn read_first_non_empty_line(path: &PathBuf) -> Result<String> {
+    let file = std::fs::File::open(path)?;
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(|line_result| line_result.ok())
+    {
+        if !line.trim().is_empty() {
+            return Ok(line);
+        }
+    }
+
+    color_eyre::eyre::bail!("csv parser requires a non-empty header line")
+}
+
 pub fn create_parser(config: &Config) -> Result<Box<dyn LogParser + Send>> {
     match config.parser.as_str() {
         "jsonl" => Ok(Box::new(JsonlParser)),
+        "csv" => {
+            if let Some(path) = config.log_file.as_ref()
+                && let Ok(header) = read_first_non_empty_line(path)
+            {
+                return Ok(Box::new(CsvParser::new(&header)?));
+            }
+
+            Ok(Box::new(CsvBootstrapParser::new()))
+        }
         "regex" => {
             let pattern = config
                 .regex_pattern
@@ -22,7 +138,16 @@ pub fn create_parser(config: &Config) -> Result<Box<dyn LogParser + Send>> {
                 .context("regex_pattern required when parser is 'regex'")?;
             Ok(Box::new(RegexParser::new(pattern)?))
         }
-        "auto" => Ok(Box::new(JsonlParser)),
+        "auto" => {
+            if let Some(path) = config.log_file.as_ref() {
+                let sample_lines = read_sample_lines(path, 20);
+                if !sample_lines.is_empty() {
+                    let sample_refs: Vec<&str> = sample_lines.iter().map(String::as_str).collect();
+                    return Ok(detect_parser(&sample_refs));
+                }
+            }
+            Ok(Box::new(AutoDetectingParser::new()))
+        }
         _ => Ok(Box::new(JsonlParser)),
     }
 }
@@ -160,6 +285,62 @@ pub fn spawn_file_watcher(
     }))
 }
 
+pub fn spawn_trainer_state_poller(
+    path: PathBuf,
+    tx: mpsc::Sender<TrainingMetrics>,
+    interval: std::time::Duration,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        let mut last_modified = std::time::UNIX_EPOCH;
+        let mut last_emitted_step: Option<u64> = None;
+
+        loop {
+            ticker.tick().await;
+
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+
+            if modified <= last_modified {
+                continue;
+            }
+            last_modified = modified;
+
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(metrics_list) = parse_trainer_state(&content) else {
+                continue;
+            };
+
+            let newest_step = metrics_list.iter().filter_map(|m| m.step).max();
+            if let (Some(previous), Some(newest)) = (last_emitted_step, newest_step)
+                && newest < previous
+            {
+                last_emitted_step = None;
+            }
+
+            for metrics in metrics_list {
+                let should_send = metrics.step.is_some_and(|step| {
+                    last_emitted_step
+                        .map(|previous| step > previous)
+                        .unwrap_or(true)
+                });
+                if should_send {
+                    last_emitted_step = metrics.step;
+                    if tx.send(metrics).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +382,64 @@ mod tests {
 
         assert!(parsed.is_some());
         assert_eq!(parsed.expect("metrics should exist").step, Some(99));
+    }
+
+    #[tokio::test]
+    async fn test_create_parser_auto_detects_csv_from_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("epoch-training-csv-test-{unique}"));
+        fs::create_dir_all(&root).expect("test directory should be created");
+        let file_path = root.join("train.csv");
+        fs::write(&file_path, "loss,step,lr\n0.5,100,0.001\n")
+            .expect("test csv file should be written");
+
+        let config = Config {
+            parser: "auto".to_string(),
+            log_file: Some(file_path.clone()),
+            ..Config::default()
+        };
+
+        let parser = create_parser(&config).expect("auto parser should be created");
+        let parsed = parser
+            .parse_line("0.5,100,0.001")
+            .expect("auto-detected csv parser should parse csv data");
+
+        assert!(parsed.is_some());
+        let metrics = parsed.expect("metrics should exist");
+        assert_eq!(metrics.loss, Some(0.5));
+        assert_eq!(metrics.step, Some(100));
+        assert_eq!(metrics.learning_rate, Some(0.001));
+
+        fs::remove_file(&file_path).expect("test file should be removed");
+        fs::remove_dir_all(&root).expect("test directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn test_create_parser_auto_detects_csv_after_header_line() {
+        let config = Config {
+            parser: "auto".to_string(),
+            log_file: Some(std::env::temp_dir().join("epoch-does-not-exist.csv")),
+            ..Config::default()
+        };
+
+        let parser = create_parser(&config).expect("auto parser should be created");
+        assert!(
+            parser
+                .parse_line("loss,step,lr")
+                .expect("header parse should succeed")
+                .is_none()
+        );
+
+        let parsed = parser
+            .parse_line("0.5,100,0.001")
+            .expect("csv parse should succeed");
+        assert!(parsed.is_some());
+        let metrics = parsed.expect("metrics should exist");
+        assert_eq!(metrics.loss, Some(0.5));
+        assert_eq!(metrics.step, Some(100));
     }
 
     #[tokio::test]
@@ -317,5 +556,77 @@ mod tests {
 
         let result = spawn_file_watcher(path, parser, tx);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_trainer_state_poller_emits_new_entries_on_rewrite() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("epoch-trainer-state-test-{unique}"));
+        fs::create_dir_all(&root).expect("test directory should be created");
+        let file_path = root.join("trainer_state.json");
+
+        fs::write(
+            &file_path,
+            r#"{"log_history":[{"loss":1.0,"learning_rate":0.001,"step":10}]}"#,
+        )
+        .expect("initial trainer state should be written");
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = spawn_trainer_state_poller(file_path.clone(), tx, Duration::from_millis(100));
+
+        let first = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first recv should complete")
+            .expect("first metric should exist");
+        assert_eq!(first.step, Some(10));
+
+        fs::write(
+            &file_path,
+            r#"{"log_history":[{"loss":1.0,"learning_rate":0.001,"step":10},{"loss":0.9,"learning_rate":0.001,"step":20}]}"#,
+        )
+        .expect("rewritten trainer state should be written");
+
+        let second = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("second recv should complete")
+            .expect("second metric should exist");
+        assert_eq!(second.step, Some(20));
+
+        handle.abort();
+        fs::remove_file(&file_path).expect("test file should be removed");
+        fs::remove_dir_all(&root).expect("test directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn test_trainer_state_poller_emits_step_zero() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("epoch-trainer-state-zero-{unique}"));
+        fs::create_dir_all(&root).expect("test directory should be created");
+        let file_path = root.join("trainer_state.json");
+
+        fs::write(
+            &file_path,
+            r#"{"log_history":[{"loss":1.0,"learning_rate":0.001,"step":0}]}"#,
+        )
+        .expect("initial trainer state should be written");
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let handle = spawn_trainer_state_poller(file_path.clone(), tx, Duration::from_millis(100));
+
+        let first = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("recv should complete")
+            .expect("metric should exist");
+        assert_eq!(first.step, Some(0));
+
+        handle.abort();
+        fs::remove_file(&file_path).expect("test file should be removed");
+        fs::remove_dir_all(&root).expect("test directory should be removed");
     }
 }

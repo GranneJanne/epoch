@@ -11,6 +11,11 @@ pub struct TrainingMetrics {
     pub step: Option<u64>,
     pub throughput: Option<f64>,
     pub tokens: Option<u64>,
+    pub eval_loss: Option<f64>,
+    pub grad_norm: Option<f64>,
+    pub samples_per_second: Option<f64>,
+    pub steps_per_second: Option<f64>,
+    pub tokens_per_second: Option<f64>,
     pub timestamp: Instant,
 }
 
@@ -22,6 +27,11 @@ impl Default for TrainingMetrics {
             step: None,
             throughput: None,
             tokens: None,
+            eval_loss: None,
+            grad_norm: None,
+            samples_per_second: None,
+            steps_per_second: None,
+            tokens_per_second: None,
             timestamp: Instant::now(),
         }
     }
@@ -34,6 +44,11 @@ impl TrainingMetrics {
             && self.step.is_none()
             && self.throughput.is_none()
             && self.tokens.is_none()
+            && self.eval_loss.is_none()
+            && self.grad_norm.is_none()
+            && self.samples_per_second.is_none()
+            && self.steps_per_second.is_none()
+            && self.tokens_per_second.is_none()
     }
 
     pub fn merge(&mut self, other: &TrainingMetrics) {
@@ -51,6 +66,21 @@ impl TrainingMetrics {
         }
         if self.tokens.is_none() {
             self.tokens = other.tokens;
+        }
+        if self.eval_loss.is_none() {
+            self.eval_loss = other.eval_loss;
+        }
+        if self.grad_norm.is_none() {
+            self.grad_norm = other.grad_norm;
+        }
+        if self.samples_per_second.is_none() {
+            self.samples_per_second = other.samples_per_second;
+        }
+        if self.steps_per_second.is_none() {
+            self.steps_per_second = other.steps_per_second;
+        }
+        if self.tokens_per_second.is_none() {
+            self.tokens_per_second = other.tokens_per_second;
         }
     }
 }
@@ -106,7 +136,23 @@ mod tests {
     fn test_training_metrics_default() {
         let metrics = TrainingMetrics::default();
         assert!(metrics.loss.is_none());
+        assert!(metrics.eval_loss.is_none());
+        assert!(metrics.grad_norm.is_none());
+        assert!(metrics.samples_per_second.is_none());
+        assert!(metrics.steps_per_second.is_none());
+        assert!(metrics.tokens_per_second.is_none());
         assert!(metrics.timestamp.elapsed().as_millis() < 100);
+    }
+
+    #[test]
+    fn test_training_metrics_default_includes_new_core_fields() {
+        let metrics = TrainingMetrics::default();
+
+        assert!(metrics.eval_loss.is_none());
+        assert!(metrics.grad_norm.is_none());
+        assert!(metrics.samples_per_second.is_none());
+        assert!(metrics.steps_per_second.is_none());
+        assert!(metrics.tokens_per_second.is_none());
     }
 
     #[test]
@@ -132,23 +178,39 @@ mod tests {
 
     #[test]
     fn test_training_metrics_is_empty_with_loss() {
-        let mut m = TrainingMetrics::default();
-        m.loss = Some(1.5);
+        let m = TrainingMetrics {
+            loss: Some(1.5),
+            ..TrainingMetrics::default()
+        };
         assert!(!m.is_empty());
     }
 
     #[test]
     fn test_training_metrics_is_empty_with_step() {
-        let mut m = TrainingMetrics::default();
-        m.step = Some(100);
+        let m = TrainingMetrics {
+            step: Some(100),
+            ..TrainingMetrics::default()
+        };
+        assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn test_training_metrics_is_empty_respects_new_fields() {
+        let m = TrainingMetrics {
+            grad_norm: Some(0.42),
+            ..TrainingMetrics::default()
+        };
+
         assert!(!m.is_empty());
     }
 
     // TrainingMetrics::merge tests
     #[test]
     fn test_training_metrics_merge_fills_none() {
-        let mut m1 = TrainingMetrics::default();
-        m1.loss = Some(1.0);
+        let mut m1 = TrainingMetrics {
+            loss: Some(1.0),
+            ..TrainingMetrics::default()
+        };
         let m2 = TrainingMetrics {
             step: Some(100),
             ..TrainingMetrics::default()
@@ -184,6 +246,11 @@ mod tests {
             step: Some(100),
             throughput: Some(1000.0),
             tokens: Some(50000),
+            eval_loss: Some(0.9),
+            grad_norm: Some(1.2),
+            samples_per_second: Some(12.3),
+            steps_per_second: Some(0.8),
+            tokens_per_second: Some(1024.0),
             ..TrainingMetrics::default()
         };
         m1.merge(&m2);
@@ -192,6 +259,31 @@ mod tests {
         assert_eq!(m1.step, Some(100)); // filled
         assert_eq!(m1.throughput, Some(1000.0)); // filled
         assert_eq!(m1.tokens, Some(50000)); // filled
+        assert_eq!(m1.eval_loss, Some(0.9)); // filled
+        assert_eq!(m1.grad_norm, Some(1.2)); // filled
+        assert_eq!(m1.samples_per_second, Some(12.3)); // filled
+        assert_eq!(m1.steps_per_second, Some(0.8)); // filled
+        assert_eq!(m1.tokens_per_second, Some(1024.0)); // filled
+    }
+
+    #[test]
+    fn test_training_metrics_merge_handles_new_fields() {
+        let mut m1 = TrainingMetrics {
+            eval_loss: Some(1.5),
+            ..TrainingMetrics::default()
+        };
+        let m2 = TrainingMetrics {
+            eval_loss: Some(1.2),
+            grad_norm: Some(0.4),
+            steps_per_second: Some(1.5),
+            ..TrainingMetrics::default()
+        };
+
+        m1.merge(&m2);
+
+        assert_eq!(m1.eval_loss, Some(1.5));
+        assert_eq!(m1.grad_norm, Some(0.4));
+        assert_eq!(m1.steps_per_second, Some(1.5));
     }
 
     // SystemMetrics::memory_usage_percent tests
