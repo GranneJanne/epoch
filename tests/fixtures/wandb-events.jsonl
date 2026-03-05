@@ -1,0 +1,10 @@
+{"_step": 10, "_runtime": 1.2, "_timestamp": 1709654321.0, "train/loss": 4.80, "train/learning_rate": 0.00001}
+{"_step": 20, "_runtime": 2.4, "_timestamp": 1709654322.0, "train/loss": 4.18, "train/learning_rate": 0.00002}
+{"_step": 30, "_runtime": 3.7, "_timestamp": 1709654323.0, "train/loss": 3.69, "train/learning_rate": 0.00003}
+{"_step": 40, "_runtime": 4.9, "_timestamp": 1709654324.0, "train/loss": 3.28, "train/learning_rate": 0.00004}
+{"_step": 50, "_runtime": 6.1, "_timestamp": 1709654325.0, "train/loss": 2.82, "train/learning_rate": 0.00005}
+{"_step": 60, "_runtime": 7.3, "_timestamp": 1709654326.0, "train/loss": 2.33, "train/learning_rate": 0.000045}
+{"_step": 70, "_runtime": 8.5, "_timestamp": 1709654327.0, "train/loss": 1.79, "train/learning_rate": 0.00004}
+{"_step": 80, "_runtime": 9.8, "_timestamp": 1709654328.0, "train/loss": 1.34, "train/learning_rate": 0.000035}
+{"_step": 90, "_runtime": 11.0, "_timestamp": 1709654329.0, "train/loss": 0.97, "train/learning_rate": 0.00003}
+{"_step": 100, "_runtime": 12.2, "_timestamp": 1709654330.0, "train/loss": 0.61, "train/learning_rate": 0.000025}

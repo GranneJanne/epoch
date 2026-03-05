@@ -1,0 +1,7 @@
+2026-03-05T10:00:00Z INFO booting trainer worker
+2026-03-05T10:00:01Z WARN retrying dataloader connection
+Traceback (most recent call last):
+  File "train.py", line 42, in <module>
+    run()
+ValueError: data shard corrupted
+INFO recovered and waiting for next batch

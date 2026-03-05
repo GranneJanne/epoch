@@ -1,0 +1,12 @@
+INFO starting training loop
+{"loss": 4.82, "lr": 0.00001, "step": 10, "throughput": 112.4, "tokens": 32000}
+{"loss": 4.21, "learning_rate": 0.00002, "step": 20, "throughput": 118.0, "tokens": 64000}
+{"loss": 3.77, "lr": 0.00003, "step": 30, "throughput": 121.2}
+{"loss": 3.31, "lr": 0.00004, "step": 40, "throughput": 125.1, "tokens": 128000}
+debug epoch=0.5 not-json
+{"loss": 2.85, "learning_rate": 0.00005, "step": 50, "throughput": 129.7, "tokens": 160000}
+{"loss": 2.31, "lr": 0.000045, "step": 60, "throughput": 133.5, "tokens": 192000}
+{"loss": 1.74, "learning_rate": 0.00004, "step": 70, "throughput": 138.8, "tokens": 224000}
+{"loss": 1.28, "lr": 0.000035, "step": 80, "throughput": 141.4, "tokens": 256000}
+{"loss": 0.92, "learning_rate": 0.00003, "step": 90, "throughput": 146.2, "tokens": 288000}
+{"loss": 0.58, "lr": 0.000025, "step": 100, "throughput": 149.9, "tokens": 320000}

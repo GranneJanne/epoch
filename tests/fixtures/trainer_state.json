@@ -1,0 +1,45 @@
+{
+  "best_metric": 0.58,
+  "best_model_checkpoint": "checkpoint-100",
+  "epoch": 1.0,
+  "max_steps": 100,
+  "global_step": 100,
+  "log_history": [
+    {
+      "loss": 4.82,
+      "learning_rate": 0.00001,
+      "epoch": 0.1,
+      "step": 10
+    },
+    {
+      "loss": 3.77,
+      "learning_rate": 0.00003,
+      "epoch": 0.3,
+      "step": 30
+    },
+    {
+      "loss": 2.85,
+      "learning_rate": 0.00005,
+      "epoch": 0.5,
+      "step": 50
+    },
+    {
+      "loss": 1.74,
+      "learning_rate": 0.00004,
+      "epoch": 0.7,
+      "step": 70
+    },
+    {
+      "loss": 0.92,
+      "learning_rate": 0.00003,
+      "epoch": 0.9,
+      "step": 90
+    },
+    {
+      "loss": 0.58,
+      "learning_rate": 0.000025,
+      "epoch": 1.0,
+      "step": 100
+    }
+  ]
+}
