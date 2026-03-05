@@ -235,7 +235,7 @@ mod tests {
 
         assert!(result.is_some());
         let metrics = result.unwrap();
-        assert_eq!(metrics.throughput, Some(42.0));
+        assert_eq!(metrics.samples_per_second, Some(42.0));
     }
 
     #[test]

@@ -113,14 +113,19 @@ fn render_status_bar(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) 
     let status = if app.running { "Running" } else { "Stopped" };
     let data_health = app.training_data_health_state();
     let data_status = data_health.label();
+    let viewport_status = if app.ui_state.training_viewport.follow_latest {
+        "LIVE"
+    } else {
+        "PAUSED"
+    };
     let elapsed = app.elapsed();
     let hours = elapsed.as_secs() / 3600;
     let minutes = (elapsed.as_secs() % 3600) / 60;
     let seconds = elapsed.as_secs() % 60;
 
     let text = format!(
-        " [{}] | Data: {} | Elapsed: {:02}:{:02}:{:02} | q to quit",
-        status, data_status, hours, minutes, seconds
+        " [{}] | {} | Data: {} | Elapsed: {:02}:{:02}:{:02} | q to quit",
+        status, viewport_status, data_status, hours, minutes, seconds
     );
 
     let paragraph = ratatui::widgets::Paragraph::new(text)
@@ -377,10 +382,10 @@ mod tests {
             .join("\n");
 
         assert!(content.contains("Tokens/s"));
-        assert!(content.contains("unit: tok/s"));
+        assert!(content.contains("tok/s (throughput)"));
         assert!(content.contains("Samples/s"));
-        assert!(content.contains("unit: samples/s"));
+        assert!(content.contains("samples/s (dataloader)"));
         assert!(content.contains("Steps/s"));
-        assert!(content.contains("unit: steps/s"));
+        assert!(content.contains("steps/s (optimizer)"));
     }
 }

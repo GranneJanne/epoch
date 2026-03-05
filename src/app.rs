@@ -718,11 +718,9 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
-        if let AppMode::FilePicker(state) = &app.ui_state.mode {
-            assert_eq!(state.selected_index, 1);
-        } else {
-            panic!("expected file picker mode");
-        }
+        assert!(
+            matches!(app.ui_state.mode, AppMode::FilePicker(ref state) if state.selected_index == 1)
+        );
     }
 
     #[test]
@@ -732,11 +730,9 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
-        if let AppMode::FilePicker(state) = &app.ui_state.mode {
-            assert_eq!(state.selected_index, 1);
-        } else {
-            panic!("expected file picker mode");
-        }
+        assert!(
+            matches!(app.ui_state.mode, AppMode::FilePicker(ref state) if state.selected_index == 1)
+        );
     }
 
     #[test]
@@ -746,11 +742,7 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
 
-        if let AppMode::FilePicker(state) = &app.ui_state.mode {
-            assert_eq!(state.query, "a");
-        } else {
-            panic!("expected file picker mode");
-        }
+        assert!(matches!(app.ui_state.mode, AppMode::FilePicker(ref state) if state.query == "a"));
     }
 
     #[test]
@@ -774,11 +766,7 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
 
-        if let AppMode::FilePicker(state) = &app.ui_state.mode {
-            assert_eq!(state.query, "a");
-        } else {
-            panic!("expected file picker mode");
-        }
+        assert!(matches!(app.ui_state.mode, AppMode::FilePicker(ref state) if state.query == "a"));
     }
 
     #[test]

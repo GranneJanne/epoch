@@ -47,6 +47,13 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
         shell: bash
+      - name: Verify build exists
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            ls -la target/${{ matrix.target }}/release/epoch || echo "Binary not found"
+          else
+            ls -la target/${{ matrix.target }}/release/epoch || echo "Binary not found"
+          fi
       - name: Upload artifacts
         uses: softprops/action-gh-release@v2
         with:

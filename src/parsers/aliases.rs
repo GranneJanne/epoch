@@ -17,13 +17,7 @@ pub const STEP_KEYS: &[&str] = &[
     "_step",
 ];
 
-pub const THROUGHPUT_KEYS: &[&str] = &[
-    "throughput",
-    "samples_per_second",
-    "tokens_per_second",
-    "tps",
-    "items_per_second",
-];
+pub const THROUGHPUT_KEYS: &[&str] = &["throughput", "tps", "items_per_second"];
 
 pub const TOKEN_KEYS: &[&str] = &[
     "tokens",

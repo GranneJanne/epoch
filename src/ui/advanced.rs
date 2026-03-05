@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let eval_width = usize::from(trends[0].width.saturating_sub(2).max(1));
     let eval_history = app.training_viewport_series(&app.training.eval_loss_history, eval_width);
     let eval_block = Block::default()
-        .title("Eval Loss (unit: loss)")
+        .title("Eval Loss (source: validation, unit: loss)")
         .borders(Borders::ALL);
     if eval_history.is_empty() {
         frame.render_widget(
@@ -54,7 +54,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let grad_width = usize::from(trends[1].width.saturating_sub(2).max(1));
     let grad_history = app.training_viewport_series(&app.training.grad_norm_history, grad_width);
     let grad_block = Block::default()
-        .title("Grad Norm (unit: norm)")
+        .title("Grad Norm (source: optimizer, unit: norm)")
         .borders(Borders::ALL);
     if grad_history.is_empty() {
         frame.render_widget(
@@ -86,21 +86,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         frame,
         throughput[0],
         "Tokens/s",
-        "tok/s",
+        "tok/s (throughput)",
         latest.tokens_per_second,
     );
     render_rate_panel(
         frame,
         throughput[1],
         "Samples/s",
-        "samples/s",
+        "samples/s (dataloader)",
         latest.samples_per_second,
     );
     render_rate_panel(
         frame,
         throughput[2],
         "Steps/s",
-        "steps/s",
+        "steps/s (optimizer)",
         latest.steps_per_second,
     );
 
