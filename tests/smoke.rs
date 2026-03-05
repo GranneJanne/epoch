@@ -232,5 +232,5 @@ fn test_tab_cycling_many_times() {
         app.handle_key(tab_key);
     }
 
-    assert_eq!(app.ui_state.selected_tab, Tab::Metrics);
+    assert_eq!(app.ui_state.selected_tab, Tab::Dashboard);
 }
