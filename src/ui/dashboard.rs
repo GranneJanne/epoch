@@ -57,10 +57,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let top_chunks = Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(main_chunks[0]);
 
-    let history_slice = app.training.loss_history.as_slices();
-    let mut history_vec = Vec::with_capacity(app.training.loss_history.len());
-    history_vec.extend_from_slice(history_slice.0);
-    history_vec.extend_from_slice(history_slice.1);
+    let history_width = usize::from(top_chunks[0].width.saturating_sub(2).max(1));
+    let history_vec = app.training_viewport_series(&app.training.loss_history, history_width);
 
     let sparkline = Sparkline::default()
         .block(Block::default().title("Loss").borders(Borders::ALL))
@@ -87,10 +85,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .throughput
         .map(format_throughput)
         .unwrap_or_else(|| "N/A".to_string());
+    let tokens_str = latest
+        .tokens
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "N/A".to_string());
+    let health_str = app.training_data_health_state().label();
 
     let stats_text = format!(
-        "Latest Loss: {}\nStep Count: {}\nLearning Rate: {}\nThroughput: {}",
-        loss_str, step_str, lr_str, tp_str
+        "Latest Loss: {}\nStep Count: {}\nLearning Rate: {}\nThroughput: {}\nTokens: {}\nHealth: {}",
+        loss_str, step_str, lr_str, tp_str, tokens_str, health_str
     );
     let stats_widget =
         Paragraph::new(stats_text).block(Block::default().title("Key Stats").borders(Borders::ALL));
@@ -290,5 +293,35 @@ mod tests {
     fn test_format_throughput() {
         let result = format_throughput(1234567.0);
         assert_eq!(result, "1,234,567 tok/s");
+    }
+
+    #[test]
+    fn test_dashboard_remains_compact_with_new_core_metrics() {
+        let mut app = App::new(Config::default());
+        app.push_metrics(TrainingMetrics {
+            loss: Some(0.5),
+            learning_rate: Some(1e-4),
+            step: Some(100),
+            throughput: Some(1234.0),
+            tokens: Some(42_000),
+            ..Default::default()
+        });
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, f.area(), &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert!(content.contains("Tokens: 42000"));
+        assert!(content.contains("Health: Live"));
     }
 }

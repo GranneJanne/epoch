@@ -1,4 +1,6 @@
+pub mod advanced;
 pub mod dashboard;
+pub mod file_picker;
 pub mod header;
 pub mod metrics;
 pub mod system;
@@ -6,7 +8,7 @@ pub mod system;
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::app::App;
+use crate::app::{App, AppMode};
 
 // Base palette — dark terminal friendly
 pub const HEADER_BG: Color = Color::Rgb(30, 30, 46);
@@ -35,6 +37,8 @@ pub enum Tab {
     Metrics = 1,
     #[strum(serialize = "System")]
     System = 2,
+    #[strum(serialize = "Advanced")]
+    Advanced = 3,
 }
 
 // Semantic style helper functions
@@ -88,11 +92,17 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Render header
     header::render(frame, header_area, app);
 
-    // Render active tab content
-    match app.ui_state.selected_tab {
-        Tab::Dashboard => dashboard::render(frame, content_area, app),
-        Tab::Metrics => metrics::render(frame, content_area, app),
-        Tab::System => system::render(frame, content_area, app),
+    match &app.ui_state.mode {
+        AppMode::Scanning => {
+            file_picker::render_scanning(frame, content_area, app.ui_state.scanning_frame)
+        }
+        AppMode::FilePicker(state) => file_picker::render_picker(frame, content_area, state),
+        AppMode::Monitoring => match app.ui_state.selected_tab {
+            Tab::Dashboard => dashboard::render(frame, content_area, app),
+            Tab::Metrics => metrics::render(frame, content_area, app),
+            Tab::System => system::render(frame, content_area, app),
+            Tab::Advanced => advanced::render(frame, content_area, app),
+        },
     }
 
     // Render status bar
@@ -101,13 +111,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_status_bar(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let status = if app.running { "Running" } else { "Stopped" };
-    let data_status = if app.training.input_active {
-        "Live"
-    } else if app.training.last_data_at.is_some() {
-        "Stale"
-    } else {
-        "No data"
-    };
+    let data_health = app.training_data_health_state();
+    let data_status = data_health.label();
     let elapsed = app.elapsed();
     let hours = elapsed.as_secs() / 3600;
     let minutes = (elapsed.as_secs() % 3600) / 60;
@@ -145,13 +150,13 @@ mod tests {
 
     #[test]
     fn test_tab_from_repr_invalid() {
-        assert_eq!(Tab::from_repr(3), None);
+        assert_eq!(Tab::from_repr(4), None);
     }
 
     #[test]
     fn test_tab_iteration_count() {
         let tabs: Vec<Tab> = Tab::iter().collect();
-        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs.len(), 4);
     }
 
     #[test]
@@ -160,6 +165,7 @@ mod tests {
         assert!(tabs.contains(&Tab::Dashboard));
         assert!(tabs.contains(&Tab::Metrics));
         assert!(tabs.contains(&Tab::System));
+        assert!(tabs.contains(&Tab::Advanced));
     }
 
     #[test]
@@ -175,6 +181,11 @@ mod tests {
     #[test]
     fn test_tab_display_system() {
         assert_eq!(Tab::System.to_string(), "System");
+    }
+
+    #[test]
+    fn test_tab_display_advanced() {
+        assert_eq!(Tab::Advanced.to_string(), "Advanced");
     }
 
     #[test]
@@ -197,8 +208,6 @@ mod tests {
 
     #[test]
     fn test_min_dimensions_exist() {
-        assert!(MIN_WIDTH > 0);
-        assert!(MIN_HEIGHT > 0);
         assert_eq!(MIN_WIDTH, 60);
         assert_eq!(MIN_HEIGHT, 20);
     }
@@ -220,8 +229,10 @@ mod tests {
     }
 
     use crate::config::Config;
+    use crate::types::TrainingMetrics;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::time::Instant;
 
     #[test]
     fn test_render_minimum_size() {
@@ -288,5 +299,88 @@ mod tests {
             }
         }
         assert!(found);
+    }
+
+    #[test]
+    fn test_status_health_state_uses_shared_logic() {
+        use crate::app::DataHealthState;
+
+        let mut app = App::new(Config::default());
+        assert_eq!(app.training_data_health_state(), DataHealthState::NoData);
+
+        app.training.last_data_at = Some(std::time::Instant::now());
+        app.training.input_active = false;
+        assert_eq!(app.training_data_health_state(), DataHealthState::Stale);
+
+        app.training.input_active = true;
+        assert_eq!(app.training_data_health_state(), DataHealthState::Live);
+    }
+
+    #[test]
+    fn test_advanced_tab_renders_core_stability_diagnostics() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Config::default());
+        app.ui_state.selected_tab = Tab::Advanced;
+
+        app.push_metrics(TrainingMetrics {
+            loss: Some(0.9),
+            eval_loss: Some(0.8),
+            grad_norm: Some(1.5),
+            tokens_per_second: Some(1400.0),
+            samples_per_second: Some(20.0),
+            steps_per_second: Some(0.4),
+            timestamp: Instant::now(),
+            ..TrainingMetrics::default()
+        });
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let content = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert!(content.contains("Stability Summary"));
+        assert!(content.contains("Perplexity"));
+        assert!(content.contains("Loss spikes"));
+    }
+
+    #[test]
+    fn test_advanced_tab_labels_units_explicitly() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Config::default());
+        app.ui_state.selected_tab = Tab::Advanced;
+
+        app.push_metrics(TrainingMetrics {
+            tokens_per_second: Some(1400.0),
+            samples_per_second: Some(20.0),
+            steps_per_second: Some(0.4),
+            timestamp: Instant::now(),
+            ..TrainingMetrics::default()
+        });
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let content = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert!(content.contains("Tokens/s"));
+        assert!(content.contains("unit: tok/s"));
+        assert!(content.contains("Samples/s"));
+        assert!(content.contains("unit: samples/s"));
+        assert!(content.contains("Steps/s"));
+        assert!(content.contains("unit: steps/s"));
     }
 }

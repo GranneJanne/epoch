@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(title_paragraph, title_area);
 
     // Tab bar
-    let tab_titles = vec!["Dashboard", "Metrics", "System"];
+    let tab_titles = vec!["Dashboard", "Metrics", "System", "Advanced"];
     let tabs = ratatui::widgets::Tabs::new(tab_titles)
         .select(app.ui_state.selected_tab as usize)
         .highlight_style(crate::ui::tab_active_style())

@@ -5,7 +5,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 
-use crate::app::App;
+use crate::app::{App, DataHealthState};
 use crate::ui::{
     HEADER_FG, LOSS_COLOR, LR_COLOR, MUTED, SUCCESS, WARNING, metric_label_style,
     metric_value_style,
@@ -46,7 +46,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     // 1. Loss Sparkline
-    let loss_history: Vec<u64> = app.training.loss_history.iter().copied().collect();
+    let sparkline_width = usize::from(chunks[0].width.saturating_sub(2).max(1));
+    let loss_history = app.training_viewport_series(&app.training.loss_history, sparkline_width);
     let current_loss = latest.loss.unwrap_or(0.0);
     let loss_trend = trend_indicator(&app.training.loss_history);
 
@@ -70,7 +71,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // 2. Learning Rate Sparkline
-    let lr_history: Vec<u64> = app.training.lr_history.iter().copied().collect();
+    let lr_sparkline_width = usize::from(chunks[1].width.saturating_sub(2).max(1));
+    let lr_history = app.training_viewport_series(&app.training.lr_history, lr_sparkline_width);
     let current_lr = latest.learning_rate.unwrap_or(0.0);
 
     let lr_title = format!("Learning Rate: {}", format_lr_value(current_lr));
@@ -109,18 +111,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         format!("Step: {}", format_step(current_step))
     };
 
-    let throughput_text = if let Some(t) = latest.throughput {
-        format!("Throughput: {:.1} tok/s", t)
-    } else {
-        "Throughput: —".to_string()
-    };
+    let throughput_text = format!(
+        "Tokens/s: {}\nSamples/s: {}\nSteps/s: {}",
+        format_optional_float(latest.tokens_per_second, 1),
+        format_optional_float(latest.samples_per_second, 1),
+        format_optional_float(latest.steps_per_second, 3)
+    );
 
     let step_block = Block::default().borders(Borders::ALL);
     let step_para = Paragraph::new(step_text)
         .style(metric_value_style())
         .block(step_block);
 
-    let throughput_block = Block::default().borders(Borders::ALL);
+    let throughput_block = Block::default().borders(Borders::ALL).title("Throughput");
     let throughput_para = Paragraph::new(throughput_text)
         .style(metric_value_style())
         .block(throughput_block);
@@ -148,12 +151,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         "Idle".to_string()
     };
 
-    let (status_text, status_color) = if app.training.input_active {
-        ("Live", SUCCESS)
-    } else if app.training.last_data_at.is_some() {
-        ("Stale", WARNING)
-    } else {
-        ("No data", MUTED)
+    let (status_text, status_color) = match app.training_data_health_state() {
+        DataHealthState::Live => (DataHealthState::Live.label(), SUCCESS),
+        DataHealthState::Stale => (DataHealthState::Stale.label(), WARNING),
+        DataHealthState::NoData => (DataHealthState::NoData.label(), MUTED),
     };
 
     let time_block = Block::default().borders(Borders::ALL);
@@ -171,7 +172,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .alignment(Alignment::Center)
         .block(status_block);
 
-    let points_text = format!("Points: {}", loss_history.len());
+    let points_text = format!(
+        "Tokens: {} | Eval: {} | Grad: {} | Spikes: {} | NaN/Inf: {}",
+        latest
+            .tokens
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "—".to_string()),
+        format_optional_float(latest.eval_loss, 4),
+        format_optional_float(latest.grad_norm, 3),
+        app.training.loss_spike_count,
+        app.training.nan_inf_count
+    );
     let points_block = Block::default().borders(Borders::ALL);
     let points_para = Paragraph::new(points_text)
         .style(Style::default().fg(MUTED))
@@ -226,6 +237,13 @@ fn format_lr_value(lr: f64) -> String {
     format!("{:.1e}", lr)
 }
 
+fn format_optional_float(value: Option<f64>, decimals: usize) -> String {
+    match value {
+        Some(v) => format!("{v:.decimals$}"),
+        None => "—".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +291,11 @@ mod tests {
                 step: Some(i * 100),
                 throughput: Some(1234.0),
                 tokens: Some(1000),
+                eval_loss: None,
+                grad_norm: None,
+                samples_per_second: None,
+                steps_per_second: None,
+                tokens_per_second: None,
                 timestamp: Instant::now(),
             });
         }
@@ -295,6 +318,11 @@ mod tests {
             step: None,
             throughput: None,
             tokens: None,
+            eval_loss: None,
+            grad_norm: None,
+            samples_per_second: None,
+            steps_per_second: None,
+            tokens_per_second: None,
             timestamp: Instant::now(),
         });
 
@@ -355,5 +383,66 @@ mod tests {
         let lr = format_lr_value(0.0001);
         assert!(lr.contains("e"));
         assert_eq!(lr, "1.0e-4");
+    }
+
+    #[test]
+    fn test_metrics_tab_renders_tokens_when_present() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Config::default());
+
+        app.push_metrics(TrainingMetrics {
+            loss: Some(0.42),
+            tokens: Some(123_456),
+            step: Some(50),
+            ..TrainingMetrics::default()
+        });
+
+        terminal.draw(|f| render(f, f.area(), &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let content = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert!(content.contains("Tokens: 123456"));
+    }
+
+    #[test]
+    fn test_metrics_tab_renders_grad_norm_and_eval_loss() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Config::default());
+
+        app.push_metrics(TrainingMetrics {
+            loss: Some(0.42),
+            eval_loss: Some(0.33),
+            grad_norm: Some(1.75),
+            tokens_per_second: Some(1500.0),
+            samples_per_second: Some(25.0),
+            steps_per_second: Some(0.5),
+            ..TrainingMetrics::default()
+        });
+
+        terminal.draw(|f| render(f, f.area(), &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let content = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert!(content.contains("Eval: 0.3300"));
+        assert!(content.contains("Grad: 1.750"));
+        assert!(content.contains("Tokens/s: 1500.0"));
+        assert!(content.contains("Samples/s: 25.0"));
+        assert!(content.contains("Steps/s: 0.500"));
     }
 }

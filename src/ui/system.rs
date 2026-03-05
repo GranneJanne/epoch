@@ -77,27 +77,34 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             .block(block);
         frame.render_widget(p, layout[2]);
     } else {
-        let gpu_constraints = system
-            .gpus
-            .iter()
-            .map(|_| Constraint::Length(3))
-            .collect::<Vec<_>>();
+        let max_visible = usize::from((layout[2].height / 3).max(1));
+        let visible_count = system.gpus.len().min(max_visible);
+        let hidden_count = system.gpus.len().saturating_sub(visible_count);
+
+        let mut gpu_constraints = vec![Constraint::Length(3); visible_count];
+        if hidden_count > 0 {
+            gpu_constraints.push(Constraint::Length(1));
+        }
+
         let gpus_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints(gpu_constraints)
             .split(layout[2]);
 
-        for (i, gpu) in system.gpus.iter().enumerate() {
-            if i >= gpus_layout.len() {
-                break;
-            }
+        let avg_util =
+            system.gpus.iter().map(|g| g.utilization).sum::<f64>() / system.gpus.len() as f64;
 
+        for (i, gpu) in system.gpus.iter().take(visible_count).enumerate() {
             let gpu_area = gpus_layout[i];
             let gpu_ratio = (gpu.utilization / 100.0).clamp(0.0, 1.0);
+            let is_outlier = (gpu.utilization - avg_util).abs() >= 30.0;
+            let title = if is_outlier {
+                format!("GPU {}: {} [OUTLIER]", i, gpu.name)
+            } else {
+                format!("GPU {}: {}", i, gpu.name)
+            };
 
-            let block = Block::default()
-                .title(format!("GPU {}: {}", i, gpu.name))
-                .borders(Borders::ALL);
+            let block = Block::default().title(title).borders(Borders::ALL);
             let inner_area = block.inner(gpu_area);
             frame.render_widget(block, gpu_area);
 
@@ -107,7 +114,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .split(inner_area);
 
             let gpu_gauge = LineGauge::default()
-                .filled_style(Style::default().fg(GPU_COLOR))
+                .filled_style(Style::default().fg(if is_outlier { WARNING } else { GPU_COLOR }))
                 .filled_symbol("█")
                 .unfilled_symbol(" ")
                 .ratio(gpu_ratio)
@@ -124,6 +131,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             let detail = Paragraph::new(detail_text).style(Style::default().fg(HEADER_FG));
             frame.render_widget(detail, gpu_inner_layout[1]);
         }
+
+        if hidden_count > 0 {
+            let hidden = Paragraph::new(format!("+{} more GPUs", hidden_count))
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(MUTED));
+            frame.render_widget(hidden, gpus_layout[visible_count]);
+        }
     }
 
     let history_layout = Layout::default()
@@ -131,23 +145,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(layout[3]);
 
-    let (mut cpu_data, mut ram_data) = (
-        app.system.cpu_history.clone(),
-        app.system.ram_history.clone(),
-    );
-    let cpu_slice: &[u64] = cpu_data.make_contiguous();
-    let ram_slice: &[u64] = ram_data.make_contiguous();
+    let history_width = usize::from(history_layout[0].width.saturating_sub(2).max(1));
+    let cpu_data = app.system_viewport_series(&app.system.cpu_history, history_width);
+    let ram_data = app.system_viewport_series(&app.system.ram_history, history_width);
 
     let cpu_sparkline = Sparkline::default()
         .block(Block::default().title("CPU History").borders(Borders::ALL))
-        .data(cpu_slice)
+        .data(&cpu_data)
         .style(Style::default().fg(CPU_COLOR))
         .max(10000);
     frame.render_widget(cpu_sparkline, history_layout[0]);
 
     let ram_sparkline = Sparkline::default()
         .block(Block::default().title("RAM History").borders(Borders::ALL))
-        .data(ram_slice)
+        .data(&ram_data)
         .style(Style::default().fg(RAM_COLOR))
         .max(10000);
     frame.render_widget(ram_sparkline, history_layout[1]);
@@ -341,5 +352,98 @@ mod tests {
     #[test]
     fn test_format_percent() {
         assert_eq!(format_percent(45.2), "45.2%");
+    }
+
+    #[test]
+    fn test_system_tab_shows_hidden_gpu_count_indicator() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Config::default());
+        app.push_system(SystemMetrics {
+            cpu_usage: 30.0,
+            memory_used: 1,
+            memory_total: 2,
+            gpus: vec![
+                GpuMetrics {
+                    name: "A".into(),
+                    utilization: 10.0,
+                    memory_used: 1,
+                    memory_total: 2,
+                    temperature: 40.0,
+                },
+                GpuMetrics {
+                    name: "B".into(),
+                    utilization: 20.0,
+                    memory_used: 1,
+                    memory_total: 2,
+                    temperature: 41.0,
+                },
+                GpuMetrics {
+                    name: "C".into(),
+                    utilization: 30.0,
+                    memory_used: 1,
+                    memory_total: 2,
+                    temperature: 42.0,
+                },
+            ],
+        });
+
+        terminal
+            .draw(|frame| render(frame, frame.area(), &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert!(content.contains("+1 more GPUs"));
+    }
+
+    #[test]
+    fn test_system_tab_highlights_gpu_outlier() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Config::default());
+        app.push_system(SystemMetrics {
+            cpu_usage: 30.0,
+            memory_used: 1,
+            memory_total: 2,
+            gpus: vec![
+                GpuMetrics {
+                    name: "A".into(),
+                    utilization: 95.0,
+                    memory_used: 1,
+                    memory_total: 2,
+                    temperature: 40.0,
+                },
+                GpuMetrics {
+                    name: "B".into(),
+                    utilization: 10.0,
+                    memory_used: 1,
+                    memory_total: 2,
+                    temperature: 41.0,
+                },
+            ],
+        });
+
+        terminal
+            .draw(|frame| render(frame, frame.area(), &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        assert!(content.contains("OUTLIER"));
     }
 }

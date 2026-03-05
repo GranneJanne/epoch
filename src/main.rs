@@ -46,20 +46,44 @@ async fn main() -> Result<()> {
     setup_tracing();
 
     let mut terminal = setup_terminal().context("failed to setup terminal")?;
-    let mut app = epoch::app::App::new(config.clone());
-
-    let (event_tx, mut event_rx) = mpsc::channel(epoch::event::EVENT_CHANNEL_CAPACITY);
-    let (metrics_tx, mut metrics_rx) = mpsc::channel(epoch::event::METRICS_CHANNEL_CAPACITY);
-    let (system_tx, mut system_rx) = mpsc::channel(epoch::event::SYSTEM_CHANNEL_CAPACITY);
-
-    let _event_handle = epoch::event::spawn_event_reader(event_tx.clone());
-    let _tick_handle =
-        epoch::event::spawn_tick(event_tx, Duration::from_millis(config.tick_rate_ms));
-    let _training_handle = spawn_training_source(metrics_tx, &config)?;
-    let _system_handle =
-        spawn_system_collector(system_tx, Duration::from_millis(config.tick_rate_ms));
 
     let run_result: Result<()> = async {
+        let mut app = epoch::app::App::new(config.clone());
+
+        if !config.stdin_mode && config.log_file.is_none() {
+            app.ui_state.mode = epoch::app::AppMode::Scanning;
+        }
+
+        let (event_tx, mut event_rx) = mpsc::channel(epoch::event::EVENT_CHANNEL_CAPACITY);
+        let (metrics_tx, mut metrics_rx) = mpsc::channel(epoch::event::METRICS_CHANNEL_CAPACITY);
+        let (system_tx, mut system_rx) = mpsc::channel(epoch::event::SYSTEM_CHANNEL_CAPACITY);
+
+        let _event_handle = epoch::event::spawn_event_reader(event_tx.clone());
+        let _tick_handle =
+            epoch::event::spawn_tick(event_tx, Duration::from_millis(config.tick_rate_ms));
+
+        if matches!(app.ui_state.mode, epoch::app::AppMode::Scanning) {
+            let discovered = run_scanning_mode(&mut terminal, &mut app, &mut event_rx).await?;
+            app.ui_state.mode =
+                epoch::app::AppMode::FilePicker(epoch::app::FilePickerState::new(discovered));
+        }
+
+        if !matches!(app.ui_state.mode, epoch::app::AppMode::Monitoring) {
+            run_startup_mode(&mut terminal, &mut app, &mut event_rx).await?;
+
+            if let Some(selected_file) = app.ui_state.selected_file.take() {
+                config.log_file = Some(selected_file);
+            }
+        }
+
+        if !app.running {
+            return Ok(());
+        }
+
+        let _training_handle = spawn_training_source(metrics_tx, &config)?;
+        let _system_handle =
+            spawn_system_collector(system_tx, Duration::from_millis(config.tick_rate_ms));
+
         while app.running {
             terminal.draw(|frame| epoch::ui::render(frame, &app))?;
 
@@ -118,15 +142,94 @@ fn spawn_training_source(
     tx: mpsc::Sender<epoch::types::TrainingMetrics>,
     config: &epoch::config::Config,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    let parser = epoch::collectors::training::create_parser(config)?;
-
     if config.stdin_mode {
+        let parser = epoch::collectors::training::create_parser(config)?;
         Ok(epoch::collectors::training::spawn_stdin_reader(parser, tx))
     } else if let Some(ref path) = config.log_file {
-        epoch::collectors::training::spawn_file_watcher(path.clone(), parser, tx)
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "trainer_state.json")
+        {
+            Ok(epoch::collectors::training::spawn_trainer_state_poller(
+                path.clone(),
+                tx,
+                Duration::from_secs(2),
+            ))
+        } else {
+            let parser = epoch::collectors::training::create_parser(config)?;
+            epoch::collectors::training::spawn_file_watcher(path.clone(), parser, tx)
+        }
     } else {
         Ok(tokio::spawn(async {}))
     }
+}
+
+async fn run_startup_mode(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut epoch::app::App,
+    event_rx: &mut mpsc::Receiver<epoch::event::Event>,
+) -> Result<()> {
+    let inactivity_deadline = tokio::time::sleep(Duration::from_secs(1));
+    tokio::pin!(inactivity_deadline);
+
+    while app.running && !matches!(app.ui_state.mode, epoch::app::AppMode::Monitoring) {
+        terminal.draw(|frame| epoch::ui::render(frame, app))?;
+
+        if let epoch::app::AppMode::FilePicker(state) = &app.ui_state.mode
+            && !state.filtered_indices.is_empty()
+        {
+            tokio::select! {
+                Some(event) = event_rx.recv() => {
+                    app.handle_event(event);
+                    inactivity_deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(1));
+                }
+                _ = &mut inactivity_deadline => {
+                    if app.ui_state.selected_file.is_none()
+                        && let Some(first) = state.filtered_indices.first().copied()
+                    {
+                        app.ui_state.selected_file = Some(state.files[first].path.clone());
+                        app.ui_state.mode = epoch::app::AppMode::Monitoring;
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => app.running = false,
+            }
+            continue;
+        }
+
+        tokio::select! {
+            Some(event) = event_rx.recv() => app.handle_event(event),
+            _ = tokio::signal::ctrl_c() => app.running = false,
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_scanning_mode(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut epoch::app::App,
+    event_rx: &mut mpsc::Receiver<epoch::event::Event>,
+) -> Result<Vec<epoch::discovery::DiscoveredFile>> {
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let discovery_task =
+        tokio::task::spawn_blocking(move || epoch::discovery::discover_training_files(&cwd));
+    tokio::pin!(discovery_task);
+
+    while app.running && matches!(app.ui_state.mode, epoch::app::AppMode::Scanning) {
+        terminal.draw(|frame| epoch::ui::render(frame, app))?;
+
+        tokio::select! {
+            result = &mut discovery_task => {
+                let discovered = result.context("discovery task join failed")??;
+                return Ok(discovered);
+            }
+            Some(event) = event_rx.recv() => app.handle_event(event),
+            _ = tokio::signal::ctrl_c() => app.running = false,
+        }
+    }
+
+    Ok(vec![])
 }
 
 fn spawn_gpu_collector(
