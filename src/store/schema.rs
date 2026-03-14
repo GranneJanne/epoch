@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -40,6 +40,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             source_locator TEXT,
             project_root TEXT,
             display_name TEXT,
+            tags TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             command TEXT,
             cwd TEXT,
@@ -71,6 +72,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_run_events_time ON run_events(event_epoch_secs, id);
         ",
     )?;
+
+    if existing_version
+        .as_deref()
+        .and_then(|version| version.parse::<i64>().ok())
+        .unwrap_or(0)
+        < 2
+    {
+        let _ = conn.execute(
+            "ALTER TABLE runs ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+    }
 
     let target_version = SCHEMA_VERSION.to_string();
     if existing_version.as_deref() != Some(target_version.as_str()) {

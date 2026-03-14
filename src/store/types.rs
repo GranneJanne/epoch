@@ -69,6 +69,7 @@ pub struct RunRecord {
     pub source_locator: Option<String>,
     pub project_root: Option<String>,
     pub display_name: Option<String>,
+    pub tags: Vec<String>,
     pub status: RunStatus,
     pub command: Option<String>,
     pub cwd: Option<String>,
@@ -78,6 +79,30 @@ pub struct RunRecord {
     pub ended_at_epoch_secs: Option<i64>,
     pub last_step: Option<u64>,
     pub last_updated_epoch_secs: i64,
+}
+
+pub fn normalize_run_tags(tags: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for tag in tags {
+        let clean = tag.trim().to_ascii_lowercase();
+        if clean.is_empty() || normalized.iter().any(|existing| existing == &clean) {
+            continue;
+        }
+        normalized.push(clean);
+    }
+    normalized
+}
+
+pub fn parse_run_tags(raw: &str) -> Vec<String> {
+    let parts = raw
+        .split(',')
+        .map(|tag| tag.trim().to_string())
+        .collect::<Vec<_>>();
+    normalize_run_tags(&parts)
+}
+
+pub fn encode_run_tags(tags: &[String]) -> String {
+    normalize_run_tags(tags).join(",")
 }
 
 #[derive(Debug, Clone)]
