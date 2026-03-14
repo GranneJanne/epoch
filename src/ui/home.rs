@@ -8,7 +8,7 @@ use crate::app::{App, HomeFocusTarget};
 use crate::store::types::RunStatus;
 use crate::ui::alerts_panel::{AlertPanelData, render_alert_panel};
 use crate::ui::components::{centered_text_area, format_duration, format_epoch_date, format_step};
-use crate::ui::run_explorer::run_display_name;
+use crate::ui::run_explorer::{run_display_name, run_status_label};
 use crate::ui::theme::resolve_palette_from_config;
 
 const DETAILS_PANEL_HEIGHT: u16 = 11;
@@ -103,9 +103,9 @@ fn render_run_details_panel(
     };
 
     let (status_text, status_color) = match record.status {
-        RunStatus::Active => ("ACTIVE", palette.success),
-        RunStatus::Completed => ("COMPLETED", palette.accent),
-        RunStatus::Failed => ("FAILED", palette.error),
+        RunStatus::Active => (run_status_label(&record.status), palette.success),
+        RunStatus::Completed => (run_status_label(&record.status), palette.accent),
+        RunStatus::Failed => (run_status_label(&record.status), palette.error),
     };
 
     let step = record

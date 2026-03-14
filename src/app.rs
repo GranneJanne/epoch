@@ -1292,9 +1292,13 @@ impl App {
     }
 
     fn toggle_run_compare_for_selected_run(&mut self) {
-        let Some(run_id) = self.selected_run_id_at_cursor() else {
+        let Some(idx) = self.selected_run_index() else {
             return;
         };
+        let Some(record) = self.ui_state.explorer.records.get(idx) else {
+            return;
+        };
+        let run_id = record.run_id.clone();
 
         if self
             .ui_state
@@ -1304,6 +1308,12 @@ impl App {
             .as_deref()
             == Some(run_id.as_str())
         {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        }
+
+        if !Self::run_supports_snapshot(record) {
             self.ui_state.monitoring.run_detail.compare_run_id = None;
             self.clear_run_comparison_snapshot();
             return;
@@ -1692,6 +1702,10 @@ impl App {
             })
     }
 
+    pub fn compare_run_candidate_record(&self) -> Option<&crate::store::types::RunRecord> {
+        self.compare_run_record()
+    }
+
     pub fn selected_run_display_name(&self) -> Option<String> {
         self.selected_run_record()
             .map(crate::ui::run_explorer::run_display_name)
@@ -1710,9 +1724,50 @@ impl App {
             .and_then(|metrics| metrics.loss)
     }
 
+    fn run_supports_snapshot(record: &crate::store::types::RunRecord) -> bool {
+        if !matches!(
+            record.source_kind,
+            crate::store::types::RunSourceKind::LogFile
+        ) {
+            return false;
+        }
+
+        let Some(source_locator) = record.source_locator.as_deref() else {
+            return false;
+        };
+
+        PathBuf::from(source_locator).exists()
+    }
+
     pub fn compare_run_display_name(&self) -> Option<String> {
+        if !self.run_comparison.snapshot_mode {
+            return None;
+        }
         self.compare_run_record()
             .map(crate::ui::run_explorer::run_display_name)
+    }
+
+    pub fn selected_run_overlay_hint(&self) -> &'static str {
+        let Some(record) = self
+            .selected_run_index()
+            .and_then(|idx| self.ui_state.explorer.records.get(idx))
+        else {
+            return "overlay unavailable";
+        };
+
+        if self.run_detail_compare_run_id() == Some(record.run_id.as_str()) {
+            if self.run_comparison.snapshot_mode {
+                "overlay ready"
+            } else if Self::run_supports_snapshot(record) {
+                "overlay selected"
+            } else {
+                "overlay unavailable"
+            }
+        } else if Self::run_supports_snapshot(record) {
+            "primary selection"
+        } else {
+            "overlay unavailable"
+        }
     }
 
     pub fn handle_event(&mut self, event: Event) {
@@ -2468,7 +2523,10 @@ impl App {
             self.reset_training_snapshot_state();
         }
 
-        if is_active_run && self.training.latest.is_some() {
+        if is_active_run
+            && self.training.latest.is_some()
+            && self.current_stream_run_id.as_deref() == Some(record.run_id.as_str())
+        {
             self.load_run_detail_snapshot_for_compare_run();
             return;
         }
@@ -3191,25 +3249,26 @@ impl App {
             .cloned();
 
         let Some(record) = compare_record else {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
             self.clear_run_comparison_snapshot();
             return;
         };
 
-        if !matches!(
-            record.source_kind,
-            crate::store::types::RunSourceKind::LogFile
-        ) {
+        if !Self::run_supports_snapshot(&record) {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
             self.clear_run_comparison_snapshot();
             return;
         }
 
         let Some(source_locator) = record.source_locator else {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
             self.clear_run_comparison_snapshot();
             return;
         };
 
         let path = PathBuf::from(source_locator);
         if !path.exists() {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
             self.clear_run_comparison_snapshot();
             return;
         }
@@ -3217,6 +3276,7 @@ impl App {
         let snapshot =
             crate::collectors::training::parse_snapshot(path, &self.config).unwrap_or_default();
         if snapshot.is_empty() {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
             self.clear_run_comparison_snapshot();
             return;
         }
@@ -5699,8 +5759,20 @@ mod tests {
     #[test]
     fn test_runs_space_marks_overlay_run_for_multi_run_open() {
         use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
 
         let mut app = App::new(Config::default());
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("epoch-run-overlay-{unique}"));
+        fs::create_dir_all(&root).expect("temp directory should be created");
+        let run_a_path = root.join("run-a.jsonl");
+        let run_b_path = root.join("run-b.jsonl");
+        fs::write(&run_a_path, "{\"step\":1,\"loss\":1.0}\n").expect("run-a log should be written");
+        fs::write(&run_b_path, "{\"step\":2,\"loss\":0.8}\n").expect("run-b log should be written");
         app.ui_state.monitoring.route = MonitoringRoute::Home;
         app.ui_state.monitoring.focused_panel = Some(PanelFocus::Runs);
         app.ui_state.monitoring.home_focus = HomeFocusTarget::Runs;
@@ -5708,8 +5780,8 @@ mod tests {
             RunRecord {
                 run_id: "run-a".to_string(),
                 source_fingerprint: "fp-a".to_string(),
-                source_kind: RunSourceKind::Stdin,
-                source_locator: Some("stdin-a".to_string()),
+                source_kind: RunSourceKind::LogFile,
+                source_locator: Some(run_a_path.to_string_lossy().to_string()),
                 project_root: None,
                 display_name: Some("run-a".to_string()),
                 tags: Vec::new(),
@@ -5726,8 +5798,8 @@ mod tests {
             RunRecord {
                 run_id: "run-b".to_string(),
                 source_fingerprint: "fp-b".to_string(),
-                source_kind: RunSourceKind::Stdin,
-                source_locator: Some("stdin-b".to_string()),
+                source_kind: RunSourceKind::LogFile,
+                source_locator: Some(run_b_path.to_string_lossy().to_string()),
                 project_root: None,
                 display_name: Some("run-b".to_string()),
                 tags: Vec::new(),
@@ -5753,6 +5825,10 @@ mod tests {
         assert_eq!(app.ui_state.monitoring.route, MonitoringRoute::RunDetail);
         assert_eq!(app.run_detail_selected_run_id(), Some("run-b"));
         assert_eq!(app.run_detail_compare_run_id(), Some("run-a"));
+
+        fs::remove_file(&run_a_path).expect("run-a log should be removed");
+        fs::remove_file(&run_b_path).expect("run-b log should be removed");
+        fs::remove_dir_all(&root).expect("temp directory should be removed");
     }
 
     #[test]
@@ -5789,6 +5865,93 @@ mod tests {
 
         assert_eq!(app.training.latest.and_then(|m| m.step), Some(3));
         assert!(!app.training.loss_history.is_empty());
+    }
+
+    #[test]
+    fn test_run_detail_active_non_stream_run_loads_its_snapshot() {
+        use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("epoch-active-snapshot-{unique}"));
+        fs::create_dir_all(&root).expect("temp directory should be created");
+        let selected_log = root.join("selected.jsonl");
+        fs::write(&selected_log, "{\"step\":7,\"loss\":0.7}\n")
+            .expect("selected log should be written");
+
+        let mut app = App::new(Config::default());
+        app.ui_state.monitoring.route = MonitoringRoute::RunDetail;
+        app.push_metrics(TrainingMetrics {
+            step: Some(3),
+            loss: Some(0.25),
+            ..TrainingMetrics::default()
+        });
+        app.set_current_stream_run_id(Some("live-run".to_string()));
+        app.ui_state.explorer.records = vec![RunRecord {
+            run_id: "selected-run".to_string(),
+            source_fingerprint: "fp-selected".to_string(),
+            source_kind: RunSourceKind::LogFile,
+            source_locator: Some(selected_log.to_string_lossy().to_string()),
+            project_root: None,
+            display_name: Some("selected-run".to_string()),
+            tags: Vec::new(),
+            status: RunStatus::Active,
+            command: None,
+            cwd: None,
+            git_commit: None,
+            git_dirty: None,
+            started_at_epoch_secs: 0,
+            ended_at_epoch_secs: None,
+            last_step: Some(7),
+            last_updated_epoch_secs: 1,
+        }];
+        app.ui_state.monitoring.run_detail.selected_run_id = Some("selected-run".to_string());
+
+        app.load_run_detail_snapshot_for_selected_run();
+
+        assert_eq!(app.training.latest.as_ref().and_then(|m| m.step), Some(7));
+        assert_eq!(app.training.latest.as_ref().and_then(|m| m.loss), Some(0.7));
+
+        fs::remove_file(&selected_log).expect("selected log should be removed");
+        fs::remove_dir_all(&root).expect("temp directory should be removed");
+    }
+
+    #[test]
+    fn test_runs_space_ignores_overlay_for_unsupported_sources() {
+        use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
+
+        let mut app = App::new(Config::default());
+        app.ui_state.monitoring.route = MonitoringRoute::Home;
+        app.ui_state.monitoring.focused_panel = Some(PanelFocus::Runs);
+        app.ui_state.monitoring.home_focus = HomeFocusTarget::Runs;
+        app.ui_state.explorer.records = vec![RunRecord {
+            run_id: "stdin-run".to_string(),
+            source_fingerprint: "fp-stdin".to_string(),
+            source_kind: RunSourceKind::Stdin,
+            source_locator: Some("stdin".to_string()),
+            project_root: None,
+            display_name: Some("stdin-run".to_string()),
+            tags: Vec::new(),
+            status: RunStatus::Active,
+            command: None,
+            cwd: None,
+            git_commit: None,
+            git_dirty: None,
+            started_at_epoch_secs: 1,
+            ended_at_epoch_secs: None,
+            last_step: Some(1),
+            last_updated_epoch_secs: 1,
+        }];
+        app.sync_focused_run_from_index();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(app.run_detail_compare_run_id(), None);
+        assert_eq!(app.selected_run_overlay_hint(), "overlay unavailable");
     }
 
     #[test]

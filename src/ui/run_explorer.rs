@@ -218,21 +218,9 @@ fn render_run_table(
                 Row::new(vec![
                     Line::from(Span::styled(
                         if is_overlay {
-                            format!(
-                                "+{}",
-                                match rec.status {
-                                    RunStatus::Active => "LIVE",
-                                    RunStatus::Completed => "DONE",
-                                    RunStatus::Failed => "FAIL",
-                                }
-                            )
+                            format!("+{}", run_status_label(&rec.status))
                         } else {
-                            match rec.status {
-                                RunStatus::Active => "LIVE",
-                                RunStatus::Completed => "DONE",
-                                RunStatus::Failed => "FAIL",
-                            }
-                            .to_string()
+                            run_status_label(&rec.status).to_string()
                         },
                         Style::default().fg(if is_selected {
                             style.fg.unwrap_or(status_color)
@@ -253,8 +241,8 @@ fn render_run_table(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(6),
-            Constraint::Length(18),
+            Constraint::Length(11),
+            Constraint::Length(13),
             Constraint::Length(8),
             Constraint::Length(12),
             Constraint::Length(10),
@@ -295,11 +283,7 @@ fn render_detail_strip(frame: &mut Frame, area: Rect, app: &App, palette: &Theme
         } else {
             rec.tags.join(", ")
         };
-        let overlay = if app.run_detail_compare_run_id() == Some(rec.run_id.as_str()) {
-            "overlay ready"
-        } else {
-            "primary selection"
-        };
+        let overlay = app.selected_run_overlay_hint();
         let id_trunc = if rec.run_id.len() > 8 {
             &rec.run_id[..8]
         } else {
@@ -336,6 +320,14 @@ pub fn run_display_name(rec: &crate::store::types::RunRecord) -> String {
     }
 
     rec.run_id.chars().take(8).collect()
+}
+
+pub fn run_status_label(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Active => "ACTIVE",
+        RunStatus::Completed => "COMPLETED",
+        RunStatus::Failed => "FAILED",
+    }
 }
 
 #[cfg(test)]
