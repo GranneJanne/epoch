@@ -50,8 +50,8 @@ pub fn render_runs_panel(frame: &mut Frame, area: Rect, app: &App, is_focused: b
     .split(inner_area);
 
     render_filter_bar(frame, chunks[0], state, &palette);
-    render_run_table(frame, chunks[1], state, &palette, is_focused);
-    render_detail_strip(frame, chunks[2], state, &palette);
+    render_run_table(frame, chunks[1], app, &palette, is_focused);
+    render_detail_strip(frame, chunks[2], app, &palette);
 }
 
 fn render_filter_bar(
@@ -106,10 +106,11 @@ fn render_filter_bar(
 fn render_run_table(
     frame: &mut Frame,
     area: Rect,
-    state: &crate::app::RunExplorerUiState,
+    app: &App,
     palette: &ThemePalette,
     is_focused: bool,
 ) {
+    let state = &app.ui_state.explorer;
     if state.records.is_empty() {
         let text =
             "No runs found.\nStart a training run to record your first entry.\nPress r to refresh.";
@@ -120,7 +121,8 @@ fn render_run_table(
         return;
     }
 
-    let header = Row::new(vec!["St", "Name", "Step", "Started", "Source"])
+    let compare_run_id = app.run_detail_compare_run_id();
+    let header = Row::new(vec!["State", "Name", "Step", "Started", "Source"])
         .style(Style::default().add_modifier(Modifier::BOLD));
 
     // Use cached processed records if available, otherwise fall back to computing on-the-fly
@@ -133,19 +135,32 @@ fn render_run_table(
             .enumerate()
             .map(|(i, processed)| {
                 let is_selected = i == state.selected_idx;
+                let record = &state.records[i];
+                let is_overlay = compare_run_id == Some(record.run_id.as_str());
                 let mut style = Style::default();
 
                 if is_selected && is_focused {
-                    style = style.fg(palette.header_bg).bg(palette.accent);
+                    style = style
+                        .fg(palette.header_bg)
+                        .bg(palette.accent)
+                        .add_modifier(Modifier::BOLD);
                 } else if is_selected {
                     style = style.add_modifier(Modifier::REVERSED);
+                } else if matches!(record.status, RunStatus::Failed) {
+                    style = style.fg(palette.error);
+                } else if matches!(record.status, RunStatus::Completed) {
+                    style = style.fg(palette.muted);
                 } else {
-                    style = style.fg(palette.header_fg);
+                    style = style.fg(palette.header_fg).add_modifier(Modifier::BOLD);
                 }
 
                 Row::new(vec![
                     Line::from(Span::styled(
-                        processed.status_icon,
+                        if is_overlay {
+                            format!("+{}", processed.status_label)
+                        } else {
+                            processed.status_label.to_string()
+                        },
                         Style::default().fg(if is_selected {
                             style.fg.unwrap_or(processed.status_color)
                         } else {
@@ -167,10 +182,10 @@ fn render_run_table(
             .iter()
             .enumerate()
             .map(|(i, rec)| {
-                let (status_icon, status_color) = match rec.status {
-                    RunStatus::Active => ("●", palette.success),
-                    RunStatus::Completed => ("✓", palette.muted),
-                    RunStatus::Failed => ("✗", palette.error),
+                let status_color = match rec.status {
+                    RunStatus::Active => palette.success,
+                    RunStatus::Completed => palette.muted,
+                    RunStatus::Failed => palette.error,
                 };
 
                 let name = truncate(&run_display_name(rec), 20);
@@ -182,19 +197,43 @@ fn render_run_table(
                 let source = rec.source_kind.as_str();
 
                 let is_selected = i == state.selected_idx;
+                let is_overlay = compare_run_id == Some(rec.run_id.as_str());
                 let mut style = Style::default();
 
                 if is_selected && is_focused {
-                    style = style.fg(palette.header_bg).bg(palette.accent);
+                    style = style
+                        .fg(palette.header_bg)
+                        .bg(palette.accent)
+                        .add_modifier(Modifier::BOLD);
                 } else if is_selected {
                     style = style.add_modifier(Modifier::REVERSED);
+                } else if matches!(rec.status, RunStatus::Failed) {
+                    style = style.fg(palette.error);
+                } else if matches!(rec.status, RunStatus::Completed) {
+                    style = style.fg(palette.muted);
                 } else {
-                    style = style.fg(palette.header_fg);
+                    style = style.fg(palette.header_fg).add_modifier(Modifier::BOLD);
                 }
 
                 Row::new(vec![
                     Line::from(Span::styled(
-                        status_icon,
+                        if is_overlay {
+                            format!(
+                                "+{}",
+                                match rec.status {
+                                    RunStatus::Active => "LIVE",
+                                    RunStatus::Completed => "DONE",
+                                    RunStatus::Failed => "FAIL",
+                                }
+                            )
+                        } else {
+                            match rec.status {
+                                RunStatus::Active => "LIVE",
+                                RunStatus::Completed => "DONE",
+                                RunStatus::Failed => "FAIL",
+                            }
+                            .to_string()
+                        },
                         Style::default().fg(if is_selected {
                             style.fg.unwrap_or(status_color)
                         } else {
@@ -214,11 +253,11 @@ fn render_run_table(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(2),
-            Constraint::Length(20),
+            Constraint::Length(6),
+            Constraint::Length(18),
             Constraint::Length(8),
-            Constraint::Length(14),
             Constraint::Length(12),
+            Constraint::Length(10),
         ],
     )
     .header(header)
@@ -230,18 +269,18 @@ fn render_run_table(
     frame.render_stateful_widget(table, area, &mut table_state);
 }
 
-fn render_detail_strip(
-    frame: &mut Frame,
-    area: Rect,
-    state: &crate::app::RunExplorerUiState,
-    palette: &ThemePalette,
-) {
+fn render_detail_strip(frame: &mut Frame, area: Rect, app: &App, palette: &ThemePalette) {
+    let state = &app.ui_state.explorer;
     if state.search_active {
         let text = format!("Search: {}|", state.search_query);
         let p = Paragraph::new(text).style(Style::default().fg(palette.accent));
         frame.render_widget(p, area);
     } else if state.rename_active {
         let text = format!("Rename: {}|", state.rename_buffer);
+        let p = Paragraph::new(text).style(Style::default().fg(palette.accent));
+        frame.render_widget(p, area);
+    } else if state.tag_edit_active {
+        let text = format!("Tags: {}|", state.tag_buffer);
         let p = Paragraph::new(text).style(Style::default().fg(palette.accent));
         frame.render_widget(p, area);
     } else if let Some(run_id) = state.pending_delete_run_id.as_deref() {
@@ -251,18 +290,27 @@ fn render_detail_strip(
     } else if !state.records.is_empty() && state.selected_idx < state.records.len() {
         let rec = &state.records[state.selected_idx];
         let loc = truncate(rec.source_locator.as_deref().unwrap_or(""), 40);
+        let tags = if rec.tags.is_empty() {
+            "no tags".to_string()
+        } else {
+            rec.tags.join(", ")
+        };
+        let overlay = if app.run_detail_compare_run_id() == Some(rec.run_id.as_str()) {
+            "overlay ready"
+        } else {
+            "primary selection"
+        };
         let id_trunc = if rec.run_id.len() > 8 {
             &rec.run_id[..8]
         } else {
             &rec.run_id
         };
-        let text = format!("  {}   |   Run ID: {}", loc, id_trunc);
+        let text = format!("  {loc}   |   Tags: {tags}   |   {overlay}   |   Run ID: {id_trunc}");
 
         let p = Paragraph::new(text).style(Style::default().fg(palette.muted));
         frame.render_widget(p, area);
     } else {
-        let text =
-            "  /: search   f: filter status   n: rename   d: delete   Enter: view selected run";
+        let text = "  /: search   f: filter   n: rename   t: tags   Space: overlay   Enter: open selected run";
         let p = Paragraph::new(text).style(Style::default().fg(palette.muted));
         frame.render_widget(p, area);
     }
@@ -330,6 +378,7 @@ mod tests {
             source_locator: Some("some_script.py".to_string()),
             project_root: None,
             display_name: Some("MyTestRun".to_string()),
+            tags: Vec::new(),
             status: RunStatus::Active,
             command: None,
             cwd: None,
@@ -392,6 +441,7 @@ mod tests {
             source_locator: Some("/tmp/training-output.jsonl".to_string()),
             project_root: None,
             display_name: None,
+            tags: Vec::new(),
             status: RunStatus::Completed,
             command: None,
             cwd: None,
