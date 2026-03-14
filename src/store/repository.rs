@@ -11,7 +11,7 @@ use ulid::Ulid;
 use crate::store::schema;
 use crate::store::types::{
     EventJumpTarget, RunAttachResult, RunEventRecord, RunMetadata, RunRecord, RunSourceKind,
-    RunStatus, now_epoch_secs,
+    RunStatus, encode_run_tags, now_epoch_secs, parse_run_tags,
 };
 
 pub struct RunStore {
@@ -44,8 +44,8 @@ fn step_to_i64(step: u64) -> Result<i64> {
 
 fn row_to_run_record(row: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
     let source_kind = row.get::<_, String>(2)?;
-    let status = row.get::<_, String>(6)?;
-    let last_step_i64 = row.get::<_, Option<i64>>(13)?;
+    let status = row.get::<_, String>(7)?;
+    let last_step_i64 = row.get::<_, Option<i64>>(14)?;
     Ok(RunRecord {
         run_id: row.get(0)?,
         source_fingerprint: row.get(1)?,
@@ -53,15 +53,16 @@ fn row_to_run_record(row: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
         source_locator: row.get(3)?,
         project_root: row.get(4)?,
         display_name: row.get(5)?,
+        tags: parse_run_tags(&row.get::<_, String>(6)?),
         status: RunStatus::from_db_value(&status).unwrap_or(RunStatus::Active),
-        command: row.get(7)?,
-        cwd: row.get(8)?,
-        git_commit: row.get(9)?,
-        git_dirty: row.get::<_, Option<i64>>(10)?.map(|v| v != 0),
-        started_at_epoch_secs: row.get(11)?,
-        ended_at_epoch_secs: row.get(12)?,
+        command: row.get(8)?,
+        cwd: row.get(9)?,
+        git_commit: row.get(10)?,
+        git_dirty: row.get::<_, Option<i64>>(11)?.map(|v| v != 0),
+        started_at_epoch_secs: row.get(12)?,
+        ended_at_epoch_secs: row.get(13)?,
         last_step: last_step_i64.and_then(|value| u64::try_from(value).ok()),
-        last_updated_epoch_secs: row.get(14)?,
+        last_updated_epoch_secs: row.get(15)?,
     })
 }
 
@@ -145,6 +146,7 @@ impl RunStore {
                 source_locator,
                 project_root,
                 display_name,
+                tags,
                 status,
                 command,
                 cwd,
@@ -155,7 +157,7 @@ impl RunStore {
                 last_step,
                 last_updated_epoch_secs
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11, NULL, NULL, ?12
+                ?1, ?2, ?3, ?4, ?5, ?6, '', 'active', ?7, ?8, ?9, ?10, ?11, NULL, NULL, ?12
             )
             ",
             params![
@@ -224,6 +226,21 @@ impl RunStore {
         Ok(())
     }
 
+    pub fn set_run_tags(&self, run_id: &str, tags: &[String]) -> Result<()> {
+        let now = now_epoch_secs();
+        let encoded = encode_run_tags(tags);
+        self.conn.execute(
+            "
+            UPDATE runs
+            SET tags = ?2,
+                last_updated_epoch_secs = ?3
+            WHERE run_id = ?1
+            ",
+            params![run_id, encoded, now],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_run(&self, run_id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM runs WHERE run_id = ?1", params![run_id])?;
@@ -241,6 +258,7 @@ impl RunStore {
                     source_locator,
                     project_root,
                     display_name,
+                    tags,
                     status,
                     command,
                     cwd,
@@ -363,6 +381,7 @@ impl RunStore {
                 source_locator,
                 project_root,
                 display_name,
+                tags,
                 status,
                 command,
                 cwd,
@@ -374,7 +393,7 @@ impl RunStore {
                 last_updated_epoch_secs
             FROM runs
             WHERE (?1 IS NULL OR status = ?1)
-              AND (?2 IS NULL OR (display_name LIKE ?2 OR source_locator LIKE ?2))
+              AND (?2 IS NULL OR (display_name LIKE ?2 OR source_locator LIKE ?2 OR tags LIKE ?2))
             ORDER BY started_at_epoch_secs DESC
             LIMIT ?3
             ",

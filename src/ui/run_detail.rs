@@ -11,6 +11,7 @@ use crate::ui::components::{
     format_step, trend_indicator,
 };
 use crate::ui::graph::MetricGraph;
+use crate::ui::run_explorer::run_status_label;
 use crate::ui::theme::resolve_palette_from_config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,19 +60,32 @@ pub fn render_for_surface(frame: &mut Frame, area: Rect, app: &App, surface: Run
     {
         let [context_area, content_area] = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([Constraint::Length(2), Constraint::Min(0)])
             .areas(area);
         let run_name = app
-            .selected_run_record()
-            .and_then(|record| record.display_name.as_deref())
-            .unwrap_or(run_id);
+            .selected_run_display_name()
+            .unwrap_or_else(|| run_id.to_string());
         let run_status = app
             .selected_run_record()
-            .map(|record| record.status.as_str())
-            .unwrap_or("unknown");
-        let run_context = Paragraph::new(format!("Run Detail: {run_name} ({run_status})"))
-            .alignment(Alignment::Left)
-            .style(Style::default().fg(palette.muted));
+            .map(|record| run_status_label(&record.status))
+            .unwrap_or("UNKNOWN");
+        let run_tags = app
+            .selected_run_record()
+            .map(|record| record.tags.join(", "))
+            .filter(|tags| !tags.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+        let overlay = app
+            .compare_run_display_name()
+            .unwrap_or_else(|| "none".to_string());
+        let run_context = Paragraph::new(vec![
+            ratatui::text::Line::from(format!(
+                "Run Detail: {run_name} ({run_status})   Mode {}   Overlay {overlay}",
+                app.run_detail_mode_label()
+            )),
+            ratatui::text::Line::from(format!("Tags {run_tags}")),
+        ])
+        .alignment(Alignment::Left)
+        .style(Style::default().fg(palette.muted));
         frame.render_widget(run_context, context_area);
         content_area
     } else {
@@ -91,6 +105,7 @@ pub fn render_for_surface(frame: &mut Frame, area: Rect, app: &App, surface: Run
     let focused = app.ui_state.focused_box;
     let historical_run_detail =
         matches!(surface, RunSurface::RunDetail { .. }) && !app.run_detail_accepts_live_updates();
+    let compare_label = app.compare_run_display_name();
 
     // Main layout: graphs on left (60%), panels on right (40%)
     let [graph_area, panel_area] = Layout::default()
@@ -128,14 +143,26 @@ pub fn render_for_surface(frame: &mut Frame, area: Rect, app: &App, surface: Run
         .unwrap_or(0.0);
     let loss_trend = trend_indicator(&app.training.loss_history);
     let loss_title = format!("Loss: {:.4} {}", current_loss, loss_trend);
+    let compare_loss_data = app.graph_viewport_series(
+        0,
+        &app.run_comparison.baseline_loss_history,
+        loss_area.width.saturating_sub(2).max(1).into(),
+    );
 
-    MetricGraph::new(&loss_title, &loss_data, palette.loss_color)
+    let mut loss_graph = MetricGraph::new(&loss_title, &loss_data, palette.loss_color)
         .graph_mode(&app.config.graph_mode)
         .focused(focused == 1)
         .focus_index(Some(1))
-        .empty_message("No loss data")
-        .palette(palette.accent, palette.muted, palette.header_fg)
-        .render(frame, loss_area);
+        .empty_message(if compare_label.is_some() {
+            "No loss history for opened runs"
+        } else {
+            "No loss data"
+        })
+        .palette(palette.accent, palette.muted, palette.header_fg);
+    if let Some(label) = compare_label.as_deref() {
+        loss_graph = loss_graph.comparison_series(label, &compare_loss_data, palette.accent);
+    }
+    loss_graph.render(frame, loss_area);
 
     // Render Eval Loss graph (box 2)
     let eval_data = app.graph_viewport_series(
@@ -145,13 +172,25 @@ pub fn render_for_surface(frame: &mut Frame, area: Rect, app: &App, surface: Run
     );
     let current_eval = latest.and_then(|m| m.eval_loss);
     let eval_title = format!("Eval Loss: {}", format_optional_float(current_eval, 4));
-    MetricGraph::new(&eval_title, &eval_data, palette.loss_color)
+    let compare_eval_data = app.graph_viewport_series(
+        1,
+        &app.run_comparison.baseline_eval_loss_history,
+        eval_area.width.saturating_sub(2).max(1).into(),
+    );
+    let mut eval_graph = MetricGraph::new(&eval_title, &eval_data, palette.loss_color)
         .graph_mode(&app.config.graph_mode)
         .focused(focused == 2)
         .focus_index(Some(2))
-        .empty_message("No eval loss data")
-        .palette(palette.accent, palette.muted, palette.header_fg)
-        .render(frame, eval_area);
+        .empty_message(if compare_label.is_some() {
+            "No eval history for opened runs"
+        } else {
+            "No eval loss data"
+        })
+        .palette(palette.accent, palette.muted, palette.header_fg);
+    if let Some(label) = compare_label.as_deref() {
+        eval_graph = eval_graph.comparison_series(label, &compare_eval_data, palette.accent);
+    }
+    eval_graph.render(frame, eval_area);
 
     // Render LR graph (box 3)
     let lr_data = app.graph_viewport_series(
@@ -166,14 +205,26 @@ pub fn render_for_surface(frame: &mut Frame, area: Rect, app: &App, surface: Run
         .and_then(|m| m.learning_rate)
         .unwrap_or(0.0);
     let lr_title = format!("Learning Rate: {}", format_lr_value(current_lr));
+    let compare_lr_data = app.graph_viewport_series(
+        2,
+        &app.run_comparison.baseline_lr_history,
+        lr_area.width.saturating_sub(2).max(1).into(),
+    );
 
-    MetricGraph::new(&lr_title, &lr_data, palette.lr_color)
+    let mut lr_graph = MetricGraph::new(&lr_title, &lr_data, palette.lr_color)
         .graph_mode(&app.config.graph_mode)
         .focused(focused == 3)
         .focus_index(Some(3))
-        .empty_message("No LR data")
-        .palette(palette.accent, palette.muted, palette.header_fg)
-        .render(frame, lr_area);
+        .empty_message(if compare_label.is_some() {
+            "No LR history for opened runs"
+        } else {
+            "No LR data"
+        })
+        .palette(palette.accent, palette.muted, palette.header_fg);
+    if let Some(label) = compare_label.as_deref() {
+        lr_graph = lr_graph.comparison_series(label, &compare_lr_data, palette.accent);
+    }
+    lr_graph.render(frame, lr_area);
 
     // Render Grad Norm graph (box 4)
     let grad_data = app.graph_viewport_series(
@@ -183,13 +234,25 @@ pub fn render_for_surface(frame: &mut Frame, area: Rect, app: &App, surface: Run
     );
     let current_grad = latest.and_then(|m| m.grad_norm);
     let grad_title = format!("Grad Norm: {}", format_optional_float(current_grad, 3));
-    MetricGraph::new(&grad_title, &grad_data, palette.lr_color)
+    let compare_grad_data = app.graph_viewport_series(
+        3,
+        &app.run_comparison.baseline_grad_norm_history,
+        grad_area.width.saturating_sub(2).max(1).into(),
+    );
+    let mut grad_graph = MetricGraph::new(&grad_title, &grad_data, palette.lr_color)
         .graph_mode(&app.config.graph_mode)
         .focused(focused == 4)
         .focus_index(Some(4))
-        .empty_message("No grad norm data")
-        .palette(palette.accent, palette.muted, palette.header_fg)
-        .render(frame, grad_area);
+        .empty_message(if compare_label.is_some() {
+            "No grad norm history for opened runs"
+        } else {
+            "No grad norm data"
+        })
+        .palette(palette.accent, palette.muted, palette.header_fg);
+    if let Some(label) = compare_label.as_deref() {
+        grad_graph = grad_graph.comparison_series(label, &compare_grad_data, palette.accent);
+    }
+    grad_graph.render(frame, grad_area);
 
     // Panels layout: stability, core, signals, alerts stacked
     let [stability_area, core_area, signals_area, alerts_area] = Layout::default()
@@ -243,8 +306,8 @@ fn render_stability_sidebar(
     let (system_line, alert_line, parser_line) = if historical_run_detail {
         let selected = app.selected_run_record();
         let status = selected
-            .map(|record| record.status.as_str().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+            .map(|record| run_status_label(&record.status).to_string())
+            .unwrap_or_else(|| "UNKNOWN".to_string());
         let started = selected
             .map(|record| format_epoch_date(record.started_at_epoch_secs))
             .unwrap_or_else(|| "-".to_string());
@@ -455,7 +518,12 @@ fn render_signals_panel(
             .run_compare_latest_lr_delta()
             .map(|v| format!("{v:+.2e}"))
             .unwrap_or_else(|| "n/a".to_string());
-        lines.push(format!("Compare Loss Δ: {loss_delta} | LR Δ: {lr_delta}"));
+        let overlay = app
+            .compare_run_display_name()
+            .unwrap_or_else(|| "overlay".to_string());
+        lines.push(format!(
+            "Overlay {overlay} | Loss Δ: {loss_delta} | LR Δ: {lr_delta}"
+        ));
     }
 
     let block = Block::default()
@@ -634,6 +702,7 @@ mod tests {
             source_locator: Some("/tmp/finished.log".to_string()),
             project_root: None,
             display_name: Some("finished-run".to_string()),
+            tags: Vec::new(),
             status: RunStatus::Completed,
             command: None,
             cwd: None,

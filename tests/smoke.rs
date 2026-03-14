@@ -261,10 +261,7 @@ fn test_home_panel_cycling_many_times_keeps_home_route() {
     }
 
     assert_eq!(app.ui_state.monitoring.route, MonitoringRoute::Home);
-    assert_eq!(
-        app.ui_state.monitoring.home_focus,
-        HomeFocusTarget::Overview
-    );
+    assert_eq!(app.ui_state.monitoring.home_focus, HomeFocusTarget::Runs);
 }
 
 #[test]
@@ -380,6 +377,7 @@ fn sample_run(run_id: &str, status: RunStatus) -> RunRecord {
         source_locator: Some(format!("/tmp/{run_id}.log")),
         project_root: Some("/tmp/project".to_string()),
         display_name: Some(run_id.to_string()),
+        tags: Vec::new(),
         status,
         command: None,
         cwd: Some("/tmp/project".to_string()),

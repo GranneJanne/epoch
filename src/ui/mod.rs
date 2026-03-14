@@ -353,8 +353,8 @@ mod tests {
             .collect::<Vec<String>>()
             .join("\n");
 
-        assert!(content.contains("Enter:view current run") || content.contains("r:refresh runs"));
-        assert!(content.contains("r:refresh"));
+        assert!(content.contains("[2:Runs]"));
+        assert!(content.contains("1-3:focus panel") || content.contains("Tab/Shift+Tab:cycle"));
     }
 
     #[test]
@@ -423,14 +423,17 @@ mod tests {
         let mut app = App::new(Config::default());
 
         app.ui_state.monitoring.route = MonitoringRoute::Home;
-        assert_eq!(active_commands_for_view(&app), "r:refresh runs");
+        assert_eq!(
+            active_commands_for_view(&app),
+            "Up/Down:select  /:search  f:filter  n:rename  d:delete  t:tags  Space:overlay  Enter:open run  r:refresh"
+        );
 
         app.ui_state.monitoring.route = MonitoringRoute::Home;
         app.ui_state.monitoring.focused_panel = Some(PanelFocus::Runs);
         app.ui_state.monitoring.home_focus = crate::app::HomeFocusTarget::Runs;
         assert_eq!(
             active_commands_for_view(&app),
-            "Up/Down:select  /:search  f:filter  n:rename  d:delete  Enter:view run  r:refresh"
+            "Up/Down:select  /:search  f:filter  n:rename  d:delete  t:tags  Space:overlay  Enter:open run  r:refresh"
         );
 
         app.ui_state.explorer.search_active = true;

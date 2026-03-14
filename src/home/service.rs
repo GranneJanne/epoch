@@ -90,7 +90,7 @@ pub fn default_actions() -> Vec<HomeAction> {
 /// the expected sections without coupling to UI implementation.
 pub fn home_sections() -> Vec<&'static str> {
     vec![
-        "Current Run",
+        "Run Details",
         "Runs",
         "Processes",
         "System Summary",

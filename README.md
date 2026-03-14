@@ -88,15 +88,16 @@ step,loss,lr
 | ------------------- | ----------------------------------------------------------------------------------------- |
 | `q` / `Ctrl+C`      | Quit                                                                                      |
 | `Tab` / `Shift+Tab` | Cycle focused Home panel or Run Detail graph                                              |
-| `1-4`               | Focus Home panel (Overview/Runs/Processes/Alerts) or Run Detail graph (Loss/Eval/LR/Grad) |
-| `Enter`             | Drill into focused run or attach selected process                                         |
+| `1-3` / `1-4`       | Focus Home panel (Run Details/Runs/Processes) or Run Detail graph (Loss/Eval/LR/Grad)    |
+| `Enter`             | Open the selected thing in the focused panel, or attach the selected process              |
 | `/`                 | Search runs (when Runs panel is focused)                                                  |
 | `f`                 | Cycle run status filter (when Runs panel is focused)                                      |
+| `t`                 | Edit tags on the selected run (Runs panel)                                                |
 | `r`                 | Refresh run/process data                                                                  |
-| `Space`             | Toggle live/pause viewport follow (Run Detail)                                            |
-| `Left/Right`        | Pan active graph history (Run Detail)                                                     |
+| `Space`             | Mark/unmark the selected overlay run (Runs) or toggle live follow (Run Detail)            |
+| `Left/Right`        | Browse active graph history (Run Detail)                                                  |
 | `- / =`             | Zoom active graph out/in (Run Detail)                                                     |
-| `g`                 | Reset all viewports to live (Run Detail)                                                  |
+| `g`                 | Jump all viewports back to live (Run Detail)                                              |
 | `s`                 | Open settings                                                                             |
 | `?`                 | Toggle help overlay                                                                       |
 
@@ -129,7 +130,7 @@ Example:
 tick_rate_ms = 100
 parser = "auto"
 theme = "system"           # classic | catppuccin | github | nord | gruvbox | solarized | dracula | system | custom
-graph_mode = "line"        # sparkline | line
+graph_mode = "line"        # sparkline | line | dense
 adaptive_layout = true
 pinned_metrics = ["tokens_per_second"]
 hidden_metrics = []

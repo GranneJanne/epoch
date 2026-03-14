@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -92,6 +93,8 @@ pub struct RunExplorerUiState {
     pub search_active: bool,
     pub rename_active: bool,
     pub rename_buffer: String,
+    pub tag_edit_active: bool,
+    pub tag_buffer: String,
     pub pending_delete_run_id: Option<String>,
     pub status_filter: Option<crate::store::types::RunStatus>,
     // Cached values for performance optimization
@@ -101,7 +104,7 @@ pub struct RunExplorerUiState {
 
 #[derive(Debug, Clone)]
 pub struct ProcessedRunRecord {
-    pub status_icon: &'static str,
+    pub status_label: &'static str,
     pub status_color: ratatui::style::Color,
     pub name: String,
     pub step: String,
@@ -133,7 +136,7 @@ pub enum MonitoringRoute {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelFocus {
-    Overview,
+    RunDetails,
     Runs,
     Processes,
 }
@@ -150,8 +153,8 @@ impl MonitoringRoute {
     pub fn metadata(self, focused_panel: Option<PanelFocus>) -> MonitoringRouteMetadata {
         match self {
             Self::Home => MonitoringRouteMetadata {
-                route_label: match focused_panel.unwrap_or(PanelFocus::Overview) {
-                    PanelFocus::Overview => "Home",
+                route_label: match focused_panel.unwrap_or(PanelFocus::Runs) {
+                    PanelFocus::RunDetails => "Home > Run Details",
                     PanelFocus::Runs => "Home > Runs",
                     PanelFocus::Processes => "Home > Processes",
                 },
@@ -172,17 +175,17 @@ impl MonitoringRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HomeFocusTarget {
     #[default]
-    Overview,
+    RunDetails,
     Runs,
     Processes,
 }
 
 impl HomeFocusTarget {
-    const ORDER: [Self; 3] = [Self::Overview, Self::Runs, Self::Processes];
+    const ORDER: [Self; 3] = [Self::RunDetails, Self::Runs, Self::Processes];
 
     fn label(self) -> &'static str {
         match self {
-            Self::Overview => "Overview",
+            Self::RunDetails => "Run Details",
             Self::Runs => "Runs",
             Self::Processes => "Processes",
         }
@@ -190,7 +193,7 @@ impl HomeFocusTarget {
 
     fn to_box_index(self) -> u8 {
         match self {
-            Self::Overview => 1,
+            Self::RunDetails => 1,
             Self::Runs => 2,
             Self::Processes => 3,
         }
@@ -198,10 +201,10 @@ impl HomeFocusTarget {
 
     fn from_box_index(index: u8) -> Self {
         match index {
-            1 => Self::Overview,
+            1 => Self::RunDetails,
             2 => Self::Runs,
             3 => Self::Processes,
-            _ => Self::Overview,
+            _ => Self::RunDetails,
         }
     }
 
@@ -228,7 +231,7 @@ impl HomeFocusTarget {
 
     fn into_panel_focus(self) -> Option<PanelFocus> {
         match self {
-            Self::Overview => Some(PanelFocus::Overview),
+            Self::RunDetails => Some(PanelFocus::RunDetails),
             Self::Runs => Some(PanelFocus::Runs),
             Self::Processes => Some(PanelFocus::Processes),
         }
@@ -236,10 +239,10 @@ impl HomeFocusTarget {
 
     fn from_panel_focus(focus: Option<PanelFocus>) -> Self {
         match focus {
-            Some(PanelFocus::Overview) => Self::Overview,
+            Some(PanelFocus::RunDetails) => Self::RunDetails,
             Some(PanelFocus::Runs) => Self::Runs,
             Some(PanelFocus::Processes) => Self::Processes,
-            None => Self::Overview,
+            None => Self::Runs,
         }
     }
 }
@@ -394,7 +397,9 @@ pub struct AlertsState {
 #[derive(Debug, Default)]
 pub struct RunComparisonState {
     pub baseline_loss_history: VecDeque<u64>,
+    pub baseline_eval_loss_history: VecDeque<u64>,
     pub baseline_lr_history: VecDeque<u64>,
+    pub baseline_grad_norm_history: VecDeque<u64>,
     pub baseline_step_history: VecDeque<u64>,
     pub baseline_step_loss_points: VecDeque<(u64, u64)>,
     pub baseline_step_lr_points: VecDeque<(u64, u64)>,
@@ -604,8 +609,11 @@ impl SettingsState {
                 );
             }
             Self::ROW_GRAPH_MODE => {
-                self.draft.graph_mode =
-                    cycle_option(&self.draft.graph_mode, &["sparkline", "line"], delta);
+                self.draft.graph_mode = cycle_option(
+                    &self.draft.graph_mode,
+                    &["sparkline", "line", "dense"],
+                    delta,
+                );
             }
             Self::ROW_ADAPTIVE_LAYOUT => {
                 self.draft.adaptive_layout = !self.draft.adaptive_layout;
@@ -663,30 +671,39 @@ fn keymap_entries(profile: &str) -> Vec<(String, String)> {
             "Tab / Shift+Tab".to_string(),
             "Cycle focused panel or graph".to_string(),
         ),
-        ("1-4".to_string(), "Focus Home panel or graph".to_string()),
-        ("Space".to_string(), "Toggle live/pause".to_string()),
+        (
+            "1-3 / 1-4".to_string(),
+            "Focus Home panel or Run Detail graph".to_string(),
+        ),
+        (
+            "Space".to_string(),
+            "Runs: toggle overlay | Run Detail: toggle live".to_string(),
+        ),
         (
             "Left/Right".to_string(),
-            "Pan active graph history".to_string(),
+            "Browse active graph history".to_string(),
         ),
         ("- / =".to_string(), "Zoom active graph".to_string()),
-        ("g".to_string(), "Reset all viewports to live".to_string()),
+        (
+            "g".to_string(),
+            "Jump all viewports back to live".to_string(),
+        ),
         ("s".to_string(), "Open settings".to_string()),
         ("?".to_string(), "Toggle help overlay".to_string()),
     ];
 
-    let home_overview_meta = MonitoringRoute::Home.metadata(Some(PanelFocus::Overview));
+    let home_run_details_meta = MonitoringRoute::Home.metadata(Some(PanelFocus::RunDetails));
     let home_runs_meta = MonitoringRoute::Home.metadata(Some(PanelFocus::Runs));
     let home_processes_meta = MonitoringRoute::Home.metadata(Some(PanelFocus::Processes));
     let run_detail_meta = MonitoringRoute::RunDetail.metadata(None);
 
     entries.push((
-        home_overview_meta.route_label.to_string(),
-        "Enter:view current run  r:refresh runs".to_string(),
+        home_run_details_meta.route_label.to_string(),
+        "Enter:open selected run  r:refresh runs".to_string(),
     ));
     entries.push((
         home_runs_meta.route_label.to_string(),
-        "Up/Down:select  /:search  f:filter  n:rename  d:delete  Enter:view run  r:refresh"
+        "Up/Down:select  /:search  f:filter  n:rename  d:delete  t:tags  Space:overlay  Enter:open run  r:refresh"
             .to_string(),
     ));
     entries.push((
@@ -702,7 +719,8 @@ fn keymap_entries(profile: &str) -> Vec<(String, String)> {
             .breadcrumb
             .unwrap_or(run_detail_meta.route_label)
             .to_string(),
-        "1-4:graph  Up/Down:focus  -/=:zoom  Left/Right:pan".to_string(),
+        "1-4:graph  Up/Down:focus  -/=:zoom  Left/Right:browse  Space:toggle live  g:jump live"
+            .to_string(),
     ));
 
     if profile == "vim" {
@@ -853,8 +871,8 @@ impl App {
                 primary_view: PrimaryView::LiveRun,
                 monitoring: MonitoringState {
                     route: MonitoringRoute::RunDetail,
-                    focused_panel: Some(PanelFocus::Overview),
-                    home_focus: HomeFocusTarget::Overview,
+                    focused_panel: Some(PanelFocus::Runs),
+                    home_focus: HomeFocusTarget::Runs,
                     run_detail_focus: RunDetailFocusTarget::Core,
                     run_detail: RunDetailState::default(),
                     selected_pid: None,
@@ -952,19 +970,34 @@ impl App {
             };
             self.ui_state.explorer.records =
                 store.list_runs(status_str, query, 100).unwrap_or_default();
+            self.ui_state.explorer.records.sort_by_key(|record| {
+                (
+                    if matches!(record.status, RunStatus::Active) {
+                        0_u8
+                    } else {
+                        1_u8
+                    },
+                    Reverse(record.started_at_epoch_secs),
+                )
+            });
 
             let mut processed_records = Vec::with_capacity(self.ui_state.explorer.records.len());
             let mut active_count = 0;
             let palette = crate::ui::theme::resolve_palette_from_config(&self.config);
 
             for rec in &self.ui_state.explorer.records {
-                let (status_icon, status_color) = match rec.status {
+                let status_color = match rec.status {
                     RunStatus::Active => {
                         active_count += 1;
-                        ("●", palette.success)
+                        palette.success
                     }
-                    RunStatus::Completed => ("✓", palette.muted),
-                    RunStatus::Failed => ("✗", palette.error),
+                    RunStatus::Completed => palette.muted,
+                    RunStatus::Failed => palette.error,
+                };
+                let status_label = match rec.status {
+                    RunStatus::Active => "LIVE",
+                    RunStatus::Completed => "DONE",
+                    RunStatus::Failed => "FAIL",
                 };
 
                 let display_name = crate::ui::run_explorer::run_display_name(rec);
@@ -977,7 +1010,7 @@ impl App {
                 let source = rec.source_kind.as_str().to_string();
 
                 processed_records.push(crate::app::ProcessedRunRecord {
-                    status_icon,
+                    status_label,
                     status_color,
                     name,
                     step,
@@ -1188,6 +1221,13 @@ impl App {
         Some(record.run_id.chars().take(8).collect::<String>())
     }
 
+    fn selected_run_tags_default(&self) -> Option<String> {
+        let record = self
+            .selected_run_index()
+            .and_then(|idx| self.ui_state.explorer.records.get(idx))?;
+        Some(record.tags.join(", "))
+    }
+
     fn begin_run_rename_mode(&mut self) {
         let Some(initial_name) = self.selected_run_display_name_default() else {
             return;
@@ -1195,6 +1235,15 @@ impl App {
 
         self.ui_state.explorer.rename_active = true;
         self.ui_state.explorer.rename_buffer = initial_name;
+    }
+
+    fn begin_run_tag_mode(&mut self) {
+        let Some(initial_tags) = self.selected_run_tags_default() else {
+            return;
+        };
+
+        self.ui_state.explorer.tag_edit_active = true;
+        self.ui_state.explorer.tag_buffer = initial_tags;
     }
 
     fn commit_selected_run_rename(&mut self) {
@@ -1217,6 +1266,60 @@ impl App {
         self.refresh_explorer_records();
         self.ui_state.explorer.rename_active = false;
         self.ui_state.explorer.rename_buffer.clear();
+    }
+
+    fn commit_selected_run_tags(&mut self) {
+        let Some(run_id) = self.selected_run_id_at_cursor() else {
+            self.ui_state.explorer.tag_edit_active = false;
+            self.ui_state.explorer.tag_buffer.clear();
+            return;
+        };
+
+        let tags = self
+            .ui_state
+            .explorer
+            .tag_buffer
+            .split(',')
+            .map(|tag| tag.trim().to_string())
+            .collect::<Vec<_>>();
+
+        if let Some(store) = self.run_store.as_ref() {
+            let _ = store.set_run_tags(&run_id, &tags);
+        }
+        self.refresh_explorer_records();
+        self.ui_state.explorer.tag_edit_active = false;
+        self.ui_state.explorer.tag_buffer.clear();
+    }
+
+    fn toggle_run_compare_for_selected_run(&mut self) {
+        let Some(idx) = self.selected_run_index() else {
+            return;
+        };
+        let Some(record) = self.ui_state.explorer.records.get(idx) else {
+            return;
+        };
+        let run_id = record.run_id.clone();
+
+        if self
+            .ui_state
+            .monitoring
+            .run_detail
+            .compare_run_id
+            .as_deref()
+            == Some(run_id.as_str())
+        {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        }
+
+        if !Self::run_supports_snapshot(record) {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        }
+
+        self.ui_state.monitoring.run_detail.compare_run_id = Some(run_id);
     }
 
     fn confirm_selected_run_delete(&mut self) {
@@ -1244,6 +1347,18 @@ impl App {
         {
             self.ui_state.monitoring.run_detail.selected_run_id = None;
             self.set_monitoring_route(MonitoringRoute::Home);
+        }
+
+        if self
+            .ui_state
+            .monitoring
+            .run_detail
+            .compare_run_id
+            .as_deref()
+            == Some(run_id.as_str())
+        {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
         }
 
         self.ui_state.explorer.pending_delete_run_id = None;
@@ -1451,11 +1566,17 @@ impl App {
             return "Type:name  Backspace:erase  Enter:save  Esc:cancel".to_string();
         }
 
+        if matches!(self.ui_state.monitoring.route, MonitoringRoute::Home)
+            && self.ui_state.explorer.tag_edit_active
+        {
+            return "Type:tags  Backspace:erase  Enter:save  Esc:cancel".to_string();
+        }
+
         match self.ui_state.monitoring.route {
             MonitoringRoute::Home => match self.current_home_focus_target() {
-                HomeFocusTarget::Overview => {
+                HomeFocusTarget::RunDetails => {
                     if self.selected_run_record().is_some() {
-                        "Enter:view current run  r:refresh runs".to_string()
+                        "Enter:open selected run  r:refresh runs".to_string()
                     } else {
                         "r:refresh runs".to_string()
                     }
@@ -1470,7 +1591,7 @@ impl App {
                         "Up/Down:select"
                     };
                     format!(
-                        "{select_hint}  /:search  f:filter  n:rename  d:delete  Enter:view run  r:refresh"
+                        "{select_hint}  /:search  f:filter  n:rename  d:delete  t:tags  Space:overlay  Enter:open run  r:refresh"
                     )
                 }
                 HomeFocusTarget::Processes => {
@@ -1489,11 +1610,14 @@ impl App {
                     "Up/Down:focus"
                 };
                 let pan_hint = if self.is_vim_keymap() {
-                    "Left/Right/h/l:pan"
+                    "Left/Right/h/l:browse"
                 } else {
-                    "Left/Right:pan"
+                    "Left/Right:browse"
                 };
-                format!("1-4:graph  {focus_hint}  -/=:zoom  {pan_hint}")
+                format!(
+                    "Mode:{}  1-4:graph  {focus_hint}  -/=:zoom  {pan_hint}  Space:toggle live  g:jump live",
+                    self.run_detail_mode_label()
+                )
             }
         }
     }
@@ -1509,8 +1633,8 @@ impl App {
             MonitoringRoute::RunDetail => {
                 parts.push("Esc:back");
                 parts.push("Tab/Shift+Tab:cycle");
-                parts.push("Space:pause");
-                parts.push("g:reset");
+                parts.push("Space:toggle live");
+                parts.push("g:jump live");
             }
         }
 
@@ -1523,6 +1647,127 @@ impl App {
     fn set_run_detail_focus_target(&mut self, focus: RunDetailFocusTarget) {
         self.ui_state.monitoring.run_detail_focus = focus;
         self.ui_state.focused_box = focus.to_box_index();
+    }
+
+    fn set_all_run_detail_follow_latest(&mut self, follow_latest: bool) {
+        for viewport in &mut self.ui_state.graph_viewports {
+            viewport.follow_latest = follow_latest;
+            if follow_latest {
+                viewport.offset_samples = 0;
+            }
+        }
+        self.ui_state.system_viewport.follow_latest = follow_latest;
+        if follow_latest {
+            self.ui_state.system_viewport.offset_samples = 0;
+        }
+    }
+
+    fn enter_run_detail_browse_mode(&mut self) {
+        self.set_all_run_detail_follow_latest(false);
+    }
+
+    pub fn run_detail_is_browsing(&self) -> bool {
+        self.run_detail_accepts_live_updates()
+            && self.ui_state.graph_viewports.iter().any(|viewport| {
+                !viewport.follow_latest || viewport.offset_samples > 0 || viewport.zoom_level > 0
+            })
+    }
+
+    pub fn run_detail_mode_label(&self) -> &'static str {
+        if !self.run_detail_accepts_live_updates() {
+            "SNAPSHOT"
+        } else if self.run_detail_is_browsing() {
+            "BROWSING"
+        } else {
+            "LIVE"
+        }
+    }
+
+    pub fn compare_run_record(&self) -> Option<&crate::store::types::RunRecord> {
+        let compare_run_id = self
+            .ui_state
+            .monitoring
+            .run_detail
+            .compare_run_id
+            .as_deref()?;
+        self.ui_state
+            .explorer
+            .records
+            .iter()
+            .find(|record| record.run_id == compare_run_id)
+            .or_else(|| {
+                self.recent_runs
+                    .iter()
+                    .find(|record| record.run_id == compare_run_id)
+            })
+    }
+
+    pub fn compare_run_candidate_record(&self) -> Option<&crate::store::types::RunRecord> {
+        self.compare_run_record()
+    }
+
+    pub fn selected_run_display_name(&self) -> Option<String> {
+        self.selected_run_record()
+            .map(crate::ui::run_explorer::run_display_name)
+    }
+
+    pub fn selected_run_live_loss(&self) -> Option<f64> {
+        let selected_run_id = self
+            .selected_run_record()
+            .map(|record| record.run_id.as_str())?;
+        if self.current_stream_run_id.as_deref() != Some(selected_run_id) {
+            return None;
+        }
+        self.training
+            .latest
+            .as_ref()
+            .and_then(|metrics| metrics.loss)
+    }
+
+    fn run_supports_snapshot(record: &crate::store::types::RunRecord) -> bool {
+        if !matches!(
+            record.source_kind,
+            crate::store::types::RunSourceKind::LogFile
+        ) {
+            return false;
+        }
+
+        let Some(source_locator) = record.source_locator.as_deref() else {
+            return false;
+        };
+
+        PathBuf::from(source_locator).exists()
+    }
+
+    pub fn compare_run_display_name(&self) -> Option<String> {
+        if !self.run_comparison.snapshot_mode {
+            return None;
+        }
+        self.compare_run_record()
+            .map(crate::ui::run_explorer::run_display_name)
+    }
+
+    pub fn selected_run_overlay_hint(&self) -> &'static str {
+        let Some(record) = self
+            .selected_run_index()
+            .and_then(|idx| self.ui_state.explorer.records.get(idx))
+        else {
+            return "overlay unavailable";
+        };
+
+        if self.run_detail_compare_run_id() == Some(record.run_id.as_str()) {
+            if self.run_comparison.snapshot_mode {
+                "overlay ready"
+            } else if Self::run_supports_snapshot(record) {
+                "overlay selected"
+            } else {
+                "overlay unavailable"
+            }
+        } else if Self::run_supports_snapshot(record) {
+            "primary selection"
+        } else {
+            "overlay unavailable"
+        }
     }
 
     pub fn handle_event(&mut self, event: Event) {
@@ -1821,6 +2066,26 @@ impl App {
             return true;
         }
 
+        if self.ui_state.explorer.tag_edit_active {
+            match key.code {
+                KeyCode::Esc => {
+                    self.ui_state.explorer.tag_edit_active = false;
+                    self.ui_state.explorer.tag_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    self.commit_selected_run_tags();
+                }
+                KeyCode::Backspace => {
+                    self.ui_state.explorer.tag_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.ui_state.explorer.tag_buffer.push(c);
+                }
+                _ => {}
+            }
+            return true;
+        }
+
         if self.ui_state.explorer.pending_delete_run_id.is_some() {
             match key.code {
                 KeyCode::Esc => {
@@ -1875,21 +2140,19 @@ impl App {
                 self.ui_state.mode = AppMode::Help(Box::new(HelpState::from_config(&self.config)));
                 true
             }
-            (KeyCode::Char(' '), KeyModifiers::NONE) => {
+            (KeyCode::Char(' '), KeyModifiers::NONE)
+                if matches!(self.ui_state.monitoring.route, MonitoringRoute::RunDetail) =>
+            {
                 let follow_latest = !self.ui_state.graph_viewports[0].follow_latest;
-                for vp in &mut self.ui_state.graph_viewports {
-                    vp.follow_latest = follow_latest;
-                    if follow_latest {
-                        vp.offset_samples = 0;
-                    }
-                }
-                self.ui_state.system_viewport.follow_latest = follow_latest;
+                self.set_all_run_detail_follow_latest(follow_latest);
                 if follow_latest {
-                    self.ui_state.system_viewport.offset_samples = 0;
+                    self.ui_state.system_viewport.zoom_level = 0;
                 }
                 true
             }
-            (KeyCode::Char('g'), KeyModifiers::NONE) => {
+            (KeyCode::Char('g'), KeyModifiers::NONE)
+                if matches!(self.ui_state.monitoring.route, MonitoringRoute::RunDetail) =>
+            {
                 for vp in &mut self.ui_state.graph_viewports {
                     vp.follow_latest = true;
                     vp.offset_samples = 0;
@@ -1945,23 +2208,7 @@ impl App {
         self.update_home_focus_target(focus_target);
 
         match focus_target {
-            HomeFocusTarget::Overview => {
-                self.refresh_explorer_records();
-                self.sync_focused_run_from_index();
-                if self
-                    .ui_state
-                    .monitoring
-                    .run_detail
-                    .selected_run_id
-                    .is_some()
-                {
-                    self.load_run_detail_snapshot_for_selected_run();
-                    self.set_monitoring_route(MonitoringRoute::RunDetail);
-                    return true;
-                }
-                false
-            }
-            HomeFocusTarget::Runs => {
+            HomeFocusTarget::RunDetails | HomeFocusTarget::Runs => {
                 self.sync_focused_run_from_index();
                 if let Some(record) = self
                     .selected_run_index()
@@ -1971,8 +2218,9 @@ impl App {
                         Some(record.run_id.clone());
                     self.load_run_detail_snapshot_for_selected_run();
                     self.set_monitoring_route(MonitoringRoute::RunDetail);
+                    return true;
                 }
-                true
+                false
             }
             HomeFocusTarget::Processes => {
                 self.sync_focused_process_from_index();
@@ -1999,16 +2247,22 @@ impl App {
             }
             // Zoom (box-level)
             (KeyCode::Char('-'), KeyModifiers::NONE) => {
+                let accepts_live_updates = self.run_detail_accepts_live_updates();
                 let vp =
                     &mut self.ui_state.graph_viewports[(self.ui_state.focused_box - 1) as usize];
                 vp.zoom_level = vp.zoom_level.saturating_sub(1);
                 if vp.zoom_level == 0 {
                     vp.offset_samples = 0;
+                    if accepts_live_updates {
+                        vp.follow_latest = true;
+                    }
                 }
             }
             (KeyCode::Char('='), KeyModifiers::NONE) => {
+                self.enter_run_detail_browse_mode();
                 let vp =
                     &mut self.ui_state.graph_viewports[(self.ui_state.focused_box - 1) as usize];
+                vp.follow_latest = false;
                 vp.zoom_level = vp
                     .zoom_level
                     .saturating_add(1)
@@ -2018,19 +2272,26 @@ impl App {
             (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::Char('h'), KeyModifiers::NONE)
                 if is_vim || matches!(key.code, KeyCode::Left) =>
             {
+                self.enter_run_detail_browse_mode();
                 let vp =
                     &mut self.ui_state.graph_viewports[(self.ui_state.focused_box - 1) as usize];
-                if !vp.follow_latest && vp.zoom_level > 0 {
-                    vp.offset_samples = vp.offset_samples.saturating_add(Self::VIEWPORT_PAN_STEP);
+                vp.follow_latest = false;
+                if vp.zoom_level == 0 {
+                    vp.zoom_level = 1;
                 }
+                vp.offset_samples = vp.offset_samples.saturating_add(Self::VIEWPORT_PAN_STEP);
             }
             (KeyCode::Right, KeyModifiers::NONE) | (KeyCode::Char('l'), KeyModifiers::NONE)
                 if is_vim || matches!(key.code, KeyCode::Right) =>
             {
+                let accepts_live_updates = self.run_detail_accepts_live_updates();
                 let vp =
                     &mut self.ui_state.graph_viewports[(self.ui_state.focused_box - 1) as usize];
                 if !vp.follow_latest && vp.zoom_level > 0 {
                     vp.offset_samples = vp.offset_samples.saturating_sub(Self::VIEWPORT_PAN_STEP);
+                    if vp.offset_samples == 0 && accepts_live_updates {
+                        vp.follow_latest = true;
+                    }
                 }
             }
             // Focus cycling (box-level: j/k in vim, up/down always)
@@ -2054,7 +2315,7 @@ impl App {
             MonitoringRoute::Home => match self.current_home_focus_target() {
                 HomeFocusTarget::Runs => self.handle_key_run_explorer(key),
                 HomeFocusTarget::Processes => self.handle_key_system_processes(key),
-                HomeFocusTarget::Overview => self.handle_key_home_workspace(key),
+                HomeFocusTarget::RunDetails => self.handle_key_home_workspace(key),
             },
         }
     }
@@ -2082,6 +2343,26 @@ impl App {
                 }
                 KeyCode::Char(c) => {
                     self.ui_state.explorer.rename_buffer.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.ui_state.explorer.tag_edit_active {
+            match key.code {
+                KeyCode::Esc => {
+                    self.ui_state.explorer.tag_edit_active = false;
+                    self.ui_state.explorer.tag_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    self.commit_selected_run_tags();
+                }
+                KeyCode::Backspace => {
+                    self.ui_state.explorer.tag_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.ui_state.explorer.tag_buffer.push(c);
                 }
                 _ => {}
             }
@@ -2147,8 +2428,14 @@ impl App {
             (KeyCode::Char('n'), KeyModifiers::NONE) => {
                 self.begin_run_rename_mode();
             }
+            (KeyCode::Char('t'), KeyModifiers::NONE) => {
+                self.begin_run_tag_mode();
+            }
             (KeyCode::Char('d'), KeyModifiers::NONE) => {
                 self.confirm_selected_run_delete();
+            }
+            (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                self.toggle_run_compare_for_selected_run();
             }
             (KeyCode::Char('f'), KeyModifiers::NONE) => {
                 use crate::store::types::RunStatus;
@@ -2227,6 +2514,7 @@ impl App {
 
     fn load_run_detail_snapshot_for_selected_run(&mut self) {
         let Some(record) = self.selected_run_record().cloned() else {
+            self.clear_run_comparison_snapshot();
             return;
         };
 
@@ -2235,7 +2523,11 @@ impl App {
             self.reset_training_snapshot_state();
         }
 
-        if is_active_run && self.training.latest.is_some() {
+        if is_active_run
+            && self.training.latest.is_some()
+            && self.current_stream_run_id.as_deref() == Some(record.run_id.as_str())
+        {
+            self.load_run_detail_snapshot_for_compare_run();
             return;
         }
 
@@ -2243,21 +2535,25 @@ impl App {
             record.source_kind,
             crate::store::types::RunSourceKind::LogFile
         ) {
+            self.clear_run_comparison_snapshot();
             return;
         }
 
         let Some(source_locator) = record.source_locator else {
+            self.clear_run_comparison_snapshot();
             return;
         };
 
         let path = PathBuf::from(source_locator);
         if !path.exists() {
+            self.clear_run_comparison_snapshot();
             return;
         }
 
         let snapshot =
             crate::collectors::training::parse_snapshot(path, &self.config).unwrap_or_default();
         if snapshot.is_empty() {
+            self.clear_run_comparison_snapshot();
             return;
         }
 
@@ -2267,6 +2563,7 @@ impl App {
         }
         self.training.input_active = false;
         self.training.start_time = None;
+        self.load_run_detail_snapshot_for_compare_run();
     }
 
     pub fn on_tick(&mut self) {
@@ -2905,6 +3202,88 @@ impl App {
         );
     }
 
+    fn clear_run_comparison_snapshot(&mut self) {
+        self.run_comparison.baseline_loss_history.clear();
+        self.run_comparison.baseline_eval_loss_history.clear();
+        self.run_comparison.baseline_lr_history.clear();
+        self.run_comparison.baseline_grad_norm_history.clear();
+        self.run_comparison.baseline_step_history.clear();
+        self.run_comparison.baseline_step_loss_points.clear();
+        self.run_comparison.baseline_step_lr_points.clear();
+        self.run_comparison.baseline_step_loss_map.clear();
+        self.run_comparison.baseline_step_lr_map.clear();
+        self.run_comparison.snapshot_mode = false;
+    }
+
+    fn load_run_detail_snapshot_for_compare_run(&mut self) {
+        let Some(compare_run_id) = self.ui_state.monitoring.run_detail.compare_run_id.clone()
+        else {
+            self.clear_run_comparison_snapshot();
+            return;
+        };
+
+        if self
+            .ui_state
+            .monitoring
+            .run_detail
+            .selected_run_id
+            .as_deref()
+            == Some(compare_run_id.as_str())
+        {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        }
+
+        let compare_record = self
+            .ui_state
+            .explorer
+            .records
+            .iter()
+            .find(|record| record.run_id == compare_run_id)
+            .or_else(|| {
+                self.recent_runs
+                    .iter()
+                    .find(|record| record.run_id == compare_run_id)
+            })
+            .cloned();
+
+        let Some(record) = compare_record else {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        };
+
+        if !Self::run_supports_snapshot(&record) {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        }
+
+        let Some(source_locator) = record.source_locator else {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        };
+
+        let path = PathBuf::from(source_locator);
+        if !path.exists() {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        }
+
+        let snapshot =
+            crate::collectors::training::parse_snapshot(path, &self.config).unwrap_or_default();
+        if snapshot.is_empty() {
+            self.ui_state.monitoring.run_detail.compare_run_id = None;
+            self.clear_run_comparison_snapshot();
+            return;
+        }
+
+        self.set_run_comparison_snapshot(snapshot);
+    }
+
     pub fn set_run_comparison_snapshot(&mut self, baseline: Vec<TrainingMetrics>) {
         let capacity = self.config.history_size;
         let mut by_step: HashMap<u64, TrainingMetrics> = HashMap::new();
@@ -2918,13 +3297,7 @@ impl App {
             }
         }
 
-        self.run_comparison.baseline_loss_history.clear();
-        self.run_comparison.baseline_lr_history.clear();
-        self.run_comparison.baseline_step_history.clear();
-        self.run_comparison.baseline_step_loss_points.clear();
-        self.run_comparison.baseline_step_lr_points.clear();
-        self.run_comparison.baseline_step_loss_map.clear();
-        self.run_comparison.baseline_step_lr_map.clear();
+        self.clear_run_comparison_snapshot();
 
         if !by_step.is_empty() {
             let mut steps = by_step.keys().copied().collect::<Vec<_>>();
@@ -2968,6 +3341,22 @@ impl App {
                             .baseline_step_lr_map
                             .insert(step, scaled);
                     }
+                    if let Some(eval_loss) = metrics.eval_loss {
+                        let scaled = Self::scale_to_u64(eval_loss, 1000.0);
+                        Self::push_bounded(
+                            &mut self.run_comparison.baseline_eval_loss_history,
+                            scaled,
+                            capacity,
+                        );
+                    }
+                    if let Some(grad_norm) = metrics.grad_norm {
+                        let scaled = Self::scale_to_u64(grad_norm, 1000.0);
+                        Self::push_bounded(
+                            &mut self.run_comparison.baseline_grad_norm_history,
+                            scaled,
+                            capacity,
+                        );
+                    }
                 }
             }
         } else {
@@ -2989,6 +3378,22 @@ impl App {
                     let scaled = Self::scale_to_u64(lr, 1_000_000.0);
                     Self::push_bounded(
                         &mut self.run_comparison.baseline_lr_history,
+                        scaled,
+                        capacity,
+                    );
+                }
+                if let Some(eval_loss) = metrics.eval_loss {
+                    let scaled = Self::scale_to_u64(eval_loss, 1000.0);
+                    Self::push_bounded(
+                        &mut self.run_comparison.baseline_eval_loss_history,
+                        scaled,
+                        capacity,
+                    );
+                }
+                if let Some(grad_norm) = metrics.grad_norm {
+                    let scaled = Self::scale_to_u64(grad_norm, 1000.0);
+                    Self::push_bounded(
+                        &mut self.run_comparison.baseline_grad_norm_history,
                         scaled,
                         capacity,
                     );
@@ -4964,6 +5369,7 @@ mod tests {
             source_locator: Some("run-1.log".to_string()),
             project_root: None,
             display_name: Some("run-1".to_string()),
+            tags: Vec::new(),
             status: crate::store::types::RunStatus::Active,
             command: None,
             cwd: None,
@@ -5056,6 +5462,7 @@ mod tests {
             source_locator: None,
             project_root: None,
             display_name: None,
+            tags: Vec::new(),
             status: RunStatus::Active,
             command: None,
             cwd: None,
@@ -5112,6 +5519,7 @@ mod tests {
             source_locator: None,
             project_root: None,
             display_name: None,
+            tags: Vec::new(),
             status: RunStatus::Active,
             command: None,
             cwd: None,
@@ -5203,6 +5611,57 @@ mod tests {
     }
 
     #[test]
+    fn test_explorer_tag_edit_persists_tags() {
+        use crate::store::repository::RunStore;
+        use crate::store::types::{RunMetadata, RunSourceKind};
+
+        let mut app = App::new(Config::default());
+        app.ui_state.monitoring.route = MonitoringRoute::Home;
+        app.ui_state.monitoring.focused_panel = Some(PanelFocus::Runs);
+        app.ui_state.monitoring.home_focus = HomeFocusTarget::Runs;
+        app.set_store(RunStore::open_in_memory().expect("store should open"));
+
+        let attached = app
+            .run_store
+            .as_ref()
+            .expect("store should be set")
+            .attach_or_create_active_run(
+                "fp-tag-test",
+                RunSourceKind::LogFile,
+                RunMetadata {
+                    display_name: Some("tag-me".to_string()),
+                    project_root: None,
+                    command: None,
+                    cwd: None,
+                    git_commit: None,
+                    git_dirty: None,
+                    source_locator: Some("/tmp/run.log".to_string()),
+                },
+            )
+            .expect("run should be created");
+
+        app.refresh_explorer_records();
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert!(app.ui_state.explorer.tag_edit_active);
+
+        app.ui_state.explorer.tag_buffer.clear();
+        for c in "alpha, beta".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let updated = app
+            .run_store
+            .as_ref()
+            .expect("store should exist")
+            .get_run(&attached.run_id)
+            .expect("run lookup should succeed")
+            .expect("run should remain");
+
+        assert_eq!(updated.tags, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
     fn test_explorer_delete_selected_run_requires_confirmation() {
         use crate::store::repository::RunStore;
         use crate::store::types::{RunMetadata, RunSourceKind};
@@ -5271,6 +5730,7 @@ mod tests {
             source_locator: Some("stdin".to_string()),
             project_root: None,
             display_name: Some("old-run".to_string()),
+            tags: Vec::new(),
             status: RunStatus::Completed,
             command: None,
             cwd: None,
@@ -5297,6 +5757,81 @@ mod tests {
     }
 
     #[test]
+    fn test_runs_space_marks_overlay_run_for_multi_run_open() {
+        use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let mut app = App::new(Config::default());
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("epoch-run-overlay-{unique}"));
+        fs::create_dir_all(&root).expect("temp directory should be created");
+        let run_a_path = root.join("run-a.jsonl");
+        let run_b_path = root.join("run-b.jsonl");
+        fs::write(&run_a_path, "{\"step\":1,\"loss\":1.0}\n").expect("run-a log should be written");
+        fs::write(&run_b_path, "{\"step\":2,\"loss\":0.8}\n").expect("run-b log should be written");
+        app.ui_state.monitoring.route = MonitoringRoute::Home;
+        app.ui_state.monitoring.focused_panel = Some(PanelFocus::Runs);
+        app.ui_state.monitoring.home_focus = HomeFocusTarget::Runs;
+        app.ui_state.explorer.records = vec![
+            RunRecord {
+                run_id: "run-a".to_string(),
+                source_fingerprint: "fp-a".to_string(),
+                source_kind: RunSourceKind::LogFile,
+                source_locator: Some(run_a_path.to_string_lossy().to_string()),
+                project_root: None,
+                display_name: Some("run-a".to_string()),
+                tags: Vec::new(),
+                status: RunStatus::Active,
+                command: None,
+                cwd: None,
+                git_commit: None,
+                git_dirty: None,
+                started_at_epoch_secs: 1,
+                ended_at_epoch_secs: None,
+                last_step: Some(1),
+                last_updated_epoch_secs: 1,
+            },
+            RunRecord {
+                run_id: "run-b".to_string(),
+                source_fingerprint: "fp-b".to_string(),
+                source_kind: RunSourceKind::LogFile,
+                source_locator: Some(run_b_path.to_string_lossy().to_string()),
+                project_root: None,
+                display_name: Some("run-b".to_string()),
+                tags: Vec::new(),
+                status: RunStatus::Active,
+                command: None,
+                cwd: None,
+                git_commit: None,
+                git_dirty: None,
+                started_at_epoch_secs: 2,
+                ended_at_epoch_secs: None,
+                last_step: Some(2),
+                last_updated_epoch_secs: 2,
+            },
+        ];
+        app.sync_focused_run_from_index();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(app.run_detail_compare_run_id(), Some("run-a"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.ui_state.monitoring.route, MonitoringRoute::RunDetail);
+        assert_eq!(app.run_detail_selected_run_id(), Some("run-b"));
+        assert_eq!(app.run_detail_compare_run_id(), Some("run-a"));
+
+        fs::remove_file(&run_a_path).expect("run-a log should be removed");
+        fs::remove_file(&run_b_path).expect("run-b log should be removed");
+        fs::remove_dir_all(&root).expect("temp directory should be removed");
+    }
+
+    #[test]
     fn test_run_detail_active_selection_still_accepts_live_pushes() {
         use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
 
@@ -5309,6 +5844,7 @@ mod tests {
             source_locator: Some("stdin".to_string()),
             project_root: None,
             display_name: Some("active-run".to_string()),
+            tags: Vec::new(),
             status: RunStatus::Active,
             command: None,
             cwd: None,
@@ -5329,6 +5865,131 @@ mod tests {
 
         assert_eq!(app.training.latest.and_then(|m| m.step), Some(3));
         assert!(!app.training.loss_history.is_empty());
+    }
+
+    #[test]
+    fn test_run_detail_active_non_stream_run_loads_its_snapshot() {
+        use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("epoch-active-snapshot-{unique}"));
+        fs::create_dir_all(&root).expect("temp directory should be created");
+        let selected_log = root.join("selected.jsonl");
+        fs::write(&selected_log, "{\"step\":7,\"loss\":0.7}\n")
+            .expect("selected log should be written");
+
+        let mut app = App::new(Config::default());
+        app.ui_state.monitoring.route = MonitoringRoute::RunDetail;
+        app.push_metrics(TrainingMetrics {
+            step: Some(3),
+            loss: Some(0.25),
+            ..TrainingMetrics::default()
+        });
+        app.set_current_stream_run_id(Some("live-run".to_string()));
+        app.ui_state.explorer.records = vec![RunRecord {
+            run_id: "selected-run".to_string(),
+            source_fingerprint: "fp-selected".to_string(),
+            source_kind: RunSourceKind::LogFile,
+            source_locator: Some(selected_log.to_string_lossy().to_string()),
+            project_root: None,
+            display_name: Some("selected-run".to_string()),
+            tags: Vec::new(),
+            status: RunStatus::Active,
+            command: None,
+            cwd: None,
+            git_commit: None,
+            git_dirty: None,
+            started_at_epoch_secs: 0,
+            ended_at_epoch_secs: None,
+            last_step: Some(7),
+            last_updated_epoch_secs: 1,
+        }];
+        app.ui_state.monitoring.run_detail.selected_run_id = Some("selected-run".to_string());
+
+        app.load_run_detail_snapshot_for_selected_run();
+
+        assert_eq!(app.training.latest.as_ref().and_then(|m| m.step), Some(7));
+        assert_eq!(app.training.latest.as_ref().and_then(|m| m.loss), Some(0.7));
+
+        fs::remove_file(&selected_log).expect("selected log should be removed");
+        fs::remove_dir_all(&root).expect("temp directory should be removed");
+    }
+
+    #[test]
+    fn test_runs_space_ignores_overlay_for_unsupported_sources() {
+        use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
+
+        let mut app = App::new(Config::default());
+        app.ui_state.monitoring.route = MonitoringRoute::Home;
+        app.ui_state.monitoring.focused_panel = Some(PanelFocus::Runs);
+        app.ui_state.monitoring.home_focus = HomeFocusTarget::Runs;
+        app.ui_state.explorer.records = vec![RunRecord {
+            run_id: "stdin-run".to_string(),
+            source_fingerprint: "fp-stdin".to_string(),
+            source_kind: RunSourceKind::Stdin,
+            source_locator: Some("stdin".to_string()),
+            project_root: None,
+            display_name: Some("stdin-run".to_string()),
+            tags: Vec::new(),
+            status: RunStatus::Active,
+            command: None,
+            cwd: None,
+            git_commit: None,
+            git_dirty: None,
+            started_at_epoch_secs: 1,
+            ended_at_epoch_secs: None,
+            last_step: Some(1),
+            last_updated_epoch_secs: 1,
+        }];
+        app.sync_focused_run_from_index();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(app.run_detail_compare_run_id(), None);
+        assert_eq!(app.selected_run_overlay_hint(), "overlay unavailable");
+    }
+
+    #[test]
+    fn test_run_detail_mode_label_switches_between_live_and_browsing() {
+        use crate::store::types::{RunRecord, RunSourceKind, RunStatus};
+
+        let mut app = App::new(Config::default());
+        app.ui_state.monitoring.route = MonitoringRoute::RunDetail;
+        app.ui_state.explorer.records = vec![RunRecord {
+            run_id: "active-run".to_string(),
+            source_fingerprint: "fp-active".to_string(),
+            source_kind: RunSourceKind::Stdin,
+            source_locator: Some("stdin".to_string()),
+            project_root: None,
+            display_name: Some("active-run".to_string()),
+            tags: Vec::new(),
+            status: RunStatus::Active,
+            command: None,
+            cwd: None,
+            git_commit: None,
+            git_dirty: None,
+            started_at_epoch_secs: 0,
+            ended_at_epoch_secs: None,
+            last_step: Some(1),
+            last_updated_epoch_secs: 1,
+        }];
+        app.ui_state.monitoring.run_detail.selected_run_id = Some("active-run".to_string());
+        app.push_metrics(TrainingMetrics {
+            step: Some(3),
+            loss: Some(0.25),
+            ..TrainingMetrics::default()
+        });
+
+        assert_eq!(app.run_detail_mode_label(), "LIVE");
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.run_detail_mode_label(), "BROWSING");
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(app.run_detail_mode_label(), "LIVE");
     }
 
     #[test]
@@ -5467,6 +6128,7 @@ mod tests {
             source_locator: Some("/tmp/finished.log".to_string()),
             project_root: None,
             display_name: Some("finished-run".to_string()),
+            tags: Vec::new(),
             status: RunStatus::Completed,
             command: None,
             cwd: None,
@@ -5608,6 +6270,7 @@ mod tests {
             source_locator: Some("a.log".to_string()),
             project_root: None,
             display_name: Some("A".to_string()),
+            tags: Vec::new(),
             status: RunStatus::Active,
             command: None,
             cwd: None,
@@ -5625,6 +6288,7 @@ mod tests {
             source_locator: Some("b.log".to_string()),
             project_root: None,
             display_name: Some("B".to_string()),
+            tags: Vec::new(),
             status: RunStatus::Active,
             command: None,
             cwd: None,
@@ -5665,7 +6329,7 @@ mod tests {
     #[test]
     fn test_keymap_entries_contains_new_bindings() {
         let entries = keymap_entries("default");
-        assert!(entries.iter().any(|(k, _)| k == "Home"));
+        assert!(entries.iter().any(|(k, _)| k == "Home > Run Details"));
         assert!(entries.iter().any(|(k, _)| k == "Home > Runs"));
         assert!(entries.iter().any(|(k, _)| k == "Home > Processes"));
     }

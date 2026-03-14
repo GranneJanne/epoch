@@ -41,9 +41,23 @@ fn home_tab_cycles_panels_not_routes() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert_eq!(app.ui_state.monitoring.route, MonitoringRoute::Home);
+    assert_eq!(app.ui_state.monitoring.home_focus, HomeFocusTarget::Runs);
+
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(
         app.ui_state.monitoring.home_focus,
-        HomeFocusTarget::Overview
+        HomeFocusTarget::Processes
+    );
+    assert_eq!(
+        app.ui_state.monitoring.focused_panel,
+        Some(PanelFocus::Processes)
+    );
+    assert_eq!(app.ui_state.monitoring.route, MonitoringRoute::Home);
+
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        app.ui_state.monitoring.home_focus,
+        HomeFocusTarget::RunDetails
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -52,7 +66,6 @@ fn home_tab_cycles_panels_not_routes() {
         app.ui_state.monitoring.focused_panel,
         Some(PanelFocus::Runs)
     );
-    assert_eq!(app.ui_state.monitoring.route, MonitoringRoute::Home);
 
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(
@@ -60,24 +73,8 @@ fn home_tab_cycles_panels_not_routes() {
         HomeFocusTarget::Processes
     );
 
-    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(
-        app.ui_state.monitoring.home_focus,
-        HomeFocusTarget::Overview
-    );
-    assert_eq!(
-        app.ui_state.monitoring.focused_panel,
-        Some(PanelFocus::Overview)
-    );
-
-    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(app.ui_state.monitoring.home_focus, HomeFocusTarget::Runs);
-
     app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-    assert_eq!(
-        app.ui_state.monitoring.home_focus,
-        HomeFocusTarget::Overview
-    );
+    assert_eq!(app.ui_state.monitoring.home_focus, HomeFocusTarget::Runs);
 }
 
 #[test]
@@ -85,7 +82,7 @@ fn home_view_renders_required_sections() {
     use epoch::home::service::home_sections;
     let sections = home_sections();
     for required in [
-        "Current Run",
+        "Run Details",
         "Runs",
         "Processes",
         "System Summary",
@@ -277,11 +274,10 @@ fn render_buffer_home_workspace_shows_header_and_shell_hints() {
     let content = buffer_to_string(terminal.backend().buffer());
 
     assert!(content.contains("Home"));
-    assert!(content.contains("No Live Run"));
+    assert!(content.contains("Run Details"));
     assert!(content.contains("Runs"));
     assert!(content.contains("Alerts"));
     assert!(content.contains("1-3:focus panel"));
-    assert!(content.contains("r:refresh runs"));
     assert!(content.contains("?:help"));
 }
 
@@ -318,6 +314,7 @@ fn sample_run(run_id: &str, status: RunStatus) -> RunRecord {
         source_locator: Some(format!("/tmp/{run_id}.log")),
         project_root: Some("/tmp/project".to_string()),
         display_name: Some(run_id.to_string()),
+        tags: Vec::new(),
         status,
         command: None,
         cwd: Some("/tmp/project".to_string()),
