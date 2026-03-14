@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 
 use crate::app::App;
-use crate::ui::graph::render_line_graph;
+use crate::ui::graph::{LineGraphOptions, render_line_graph};
 use crate::ui::theme::resolve_palette_from_config;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -45,14 +45,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .style(Style::default().fg(palette.muted)),
             graphs[0],
         );
-    } else if app.config.graph_mode == "line" {
+    } else if app.config.graph_mode == "line" || app.config.graph_mode == "dense" {
         render_line_graph(
             frame,
             graphs[0],
             eval_block,
-            "eval_loss",
-            &eval_history,
-            palette.loss_color,
+            LineGraphOptions {
+                name: "eval_loss",
+                series: &eval_history,
+                color: palette.loss_color,
+                comparison_name: None,
+                comparison_series: None,
+                comparison_color: palette.accent,
+                dense: app.config.graph_mode == "dense",
+            },
         );
     } else {
         frame.render_widget(
@@ -76,14 +82,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .style(Style::default().fg(palette.muted)),
             graphs[1],
         );
-    } else if app.config.graph_mode == "line" {
+    } else if app.config.graph_mode == "line" || app.config.graph_mode == "dense" {
         render_line_graph(
             frame,
             graphs[1],
             grad_block,
-            "grad_norm",
-            &grad_history,
-            palette.lr_color,
+            LineGraphOptions {
+                name: "grad_norm",
+                series: &grad_history,
+                color: palette.lr_color,
+                comparison_name: None,
+                comparison_series: None,
+                comparison_color: palette.accent,
+                dense: app.config.graph_mode == "dense",
+            },
         );
     } else {
         frame.render_widget(

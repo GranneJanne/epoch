@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 
 use crate::app::{App, DataHealthState};
 use crate::ui::components::{format_lr_value, format_optional_float, format_step, trend_indicator};
-use crate::ui::graph::render_line_graph;
+use crate::ui::graph::{LineGraphOptions, render_line_graph};
 use crate::ui::theme::resolve_palette_from_config;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -63,14 +63,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             .block(loss_block)
             .style(Style::default().fg(palette.muted));
         frame.render_widget(para, chunks[0]);
-    } else if app.config.graph_mode == "line" {
+    } else if app.config.graph_mode == "line" || app.config.graph_mode == "dense" {
         render_line_graph(
             frame,
             chunks[0],
             loss_block,
-            "Loss",
-            &loss_history,
-            palette.loss_color,
+            LineGraphOptions {
+                name: "Loss",
+                series: &loss_history,
+                color: palette.loss_color,
+                comparison_name: None,
+                comparison_series: None,
+                comparison_color: palette.accent,
+                dense: app.config.graph_mode == "dense",
+            },
         );
     } else {
         let sparkline = Sparkline::default()
@@ -99,14 +105,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             .block(lr_block)
             .style(Style::default().fg(palette.muted));
         frame.render_widget(para, chunks[1]);
-    } else if app.config.graph_mode == "line" {
+    } else if app.config.graph_mode == "line" || app.config.graph_mode == "dense" {
         render_line_graph(
             frame,
             chunks[1],
             lr_block,
-            "Learning Rate",
-            &lr_history,
-            palette.lr_color,
+            LineGraphOptions {
+                name: "Learning Rate",
+                series: &lr_history,
+                color: palette.lr_color,
+                comparison_name: None,
+                comparison_series: None,
+                comparison_color: palette.accent,
+                dense: app.config.graph_mode == "dense",
+            },
         );
     } else {
         let sparkline = Sparkline::default()
