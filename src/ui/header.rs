@@ -54,29 +54,38 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 app.home_focus_index(),
                 app.home_focus_label()
             ));
-            meta_parts.push(format!(
-                "Visible runs {}",
-                app.ui_state.explorer.records.len()
-            ));
+            if let Some(name) = app.selected_run_display_name() {
+                meta_parts.push(format!("Selected {name}"));
+            }
             meta_parts.push(format!("Active {}", app.active_run_count()));
+            if let Some(overlay) = app.compare_run_display_name() {
+                meta_parts.push(format!("Overlay {overlay}"));
+            }
         }
         MonitoringRoute::RunDetail => {
+            if let Some(name) = app.selected_run_display_name() {
+                meta_parts.push(format!("Primary {name}"));
+            }
+            meta_parts.push(format!("Mode {}", app.run_detail_mode_label()));
             meta_parts.push(format!(
-                "Focus {}:{}",
+                "Graph {}:{}",
                 app.ui_state.focused_box,
                 app.run_detail_focus_label()
             ));
+            if let Some(overlay) = app.compare_run_display_name() {
+                meta_parts.push(format!("Overlay {overlay}"));
+            }
             if let Some(step) = app.current_run_step() {
                 meta_parts.push(format!("Step {}", format_step(step)));
             }
             if let Some(duration) = app.selected_run_elapsed() {
                 meta_parts.push(format!("Run {}", format_duration(duration)));
             }
-            meta_parts.push(if app.ui_state.graph_viewports[0].follow_latest {
-                "Viewport live".to_string()
-            } else {
-                "Viewport paused".to_string()
-            });
+            if let Some(record) = app.selected_run_record()
+                && !record.tags.is_empty()
+            {
+                meta_parts.push(format!("Tags {}", record.tags.join(",")));
+            }
         }
     }
     meta_parts.push(format!("Keymap {}", app.config.keymap_profile));
@@ -138,7 +147,7 @@ mod tests {
             .join("\n");
 
         assert!(content.contains("Run Detail"));
-        assert!(content.contains("Focus 1:Core"));
+        assert!(content.contains("Graph 1:Core"));
         assert!(!content.contains("epoch"));
     }
 

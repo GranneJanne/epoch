@@ -2,64 +2,50 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{App, HomeFocusTarget};
+use crate::store::types::RunStatus;
 use crate::ui::alerts_panel::{AlertPanelData, render_alert_panel};
-use crate::ui::components::{centered_text_area, format_duration, format_step};
+use crate::ui::components::{centered_text_area, format_duration, format_epoch_date, format_step};
+use crate::ui::run_explorer::run_display_name;
 use crate::ui::theme::resolve_palette_from_config;
 
-const TOP_SUMMARY_PANEL_HEIGHT: u16 = 7;
+const DETAILS_PANEL_HEIGHT: u16 = 11;
+const SYSTEM_PANEL_HEIGHT: u16 = 5;
 const RIGHT_COLUMN_TARGET_WIDTH: u16 = 58;
-const RIGHT_COLUMN_MIN_WIDTH: u16 = 28;
-const LEFT_COLUMN_MIN_WIDTH: u16 = 40;
+const RIGHT_COLUMN_MIN_WIDTH: u16 = 34;
+const LEFT_COLUMN_MIN_WIDTH: u16 = 44;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let palette = resolve_palette_from_config(&app.config);
 
     let right_width = right_column_width(area.width);
 
-    let horizontal_chunks = Layout::default()
+    let [left_col, right_col] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(right_width)])
-        .split(area);
+        .areas(area);
 
-    let left_col = horizontal_chunks[0];
-    let right_col = horizontal_chunks[1];
-
-    let left_col_chunks = Layout::default()
+    let [runs_area, processes_area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(TOP_SUMMARY_PANEL_HEIGHT),
             Constraint::Min(12),
             Constraint::Length(process_panel_height(app)),
         ])
-        .split(left_col);
+        .areas(left_col);
 
-    let right_col_chunks = Layout::default()
+    let [details_area, alerts_area, system_area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(TOP_SUMMARY_PANEL_HEIGHT),
-            Constraint::Min(0),
+            Constraint::Length(DETAILS_PANEL_HEIGHT),
+            Constraint::Min(8),
+            Constraint::Length(SYSTEM_PANEL_HEIGHT),
         ])
-        .split(right_col);
-
-    let overview_area = left_col_chunks[0];
-    let runs_area = left_col_chunks[1];
-    let processes_area = left_col_chunks[2];
-
-    let system_area = right_col_chunks[0];
-    let alerts_area = right_col_chunks[1];
+        .areas(right_col);
 
     let focus = &app.ui_state.monitoring.home_focus;
 
-    render_overview(
-        frame,
-        overview_area,
-        app,
-        &palette,
-        *focus == HomeFocusTarget::Overview,
-    );
     crate::ui::run_explorer::render_runs_panel(
         frame,
         runs_area,
@@ -73,94 +59,120 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         &palette,
         *focus == HomeFocusTarget::Processes,
     );
-    crate::ui::system_processes::render_resource_strip(frame, system_area, app, &palette);
+    render_run_details_panel(
+        frame,
+        details_area,
+        app,
+        &palette,
+        *focus == HomeFocusTarget::RunDetails,
+    );
     render_alerts(frame, alerts_area, app, &palette);
+    crate::ui::system_processes::render_resource_strip(frame, system_area, app, &palette);
 }
 
-fn render_overview(
+fn render_run_details_panel(
     frame: &mut Frame,
     area: Rect,
     app: &App,
     palette: &crate::ui::theme::ThemePalette,
     is_focused: bool,
 ) {
-    let run_state_title = match app.training_data_health_state() {
-        crate::app::DataHealthState::Live => "Current Run",
-        crate::app::DataHealthState::Stale => "Latest Run Snapshot",
-        crate::app::DataHealthState::NoData => "No Live Run",
-    };
-
-    let title = format!("[1] {run_state_title}");
-
-    let mut border_style = Style::default();
-    let mut title_style = Style::default();
-
+    let mut border_style = Style::default().fg(palette.muted);
+    let mut title_style = Style::default().fg(palette.header_fg);
     if is_focused {
         border_style = border_style.fg(palette.accent).add_modifier(Modifier::BOLD);
         title_style = title_style.fg(palette.accent).add_modifier(Modifier::BOLD);
-    } else if app.training.latest.is_some() {
-        border_style = border_style.fg(palette.success);
-        title_style = title_style.fg(palette.header_fg);
-    } else {
-        border_style = border_style.fg(palette.muted);
-        title_style = title_style.fg(palette.header_fg);
     }
 
     let block = Block::default()
-        .title(title)
+        .title("[1] Run Details")
         .title_style(title_style)
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    if let Some(latest) = &app.training.latest {
-        let step = latest
-            .step
-            .map(format_step)
-            .unwrap_or_else(|| "N/A".to_string());
-        let loss = latest
-            .loss
-            .map(|v| format!("{:.4}", v))
-            .unwrap_or_else(|| "N/A".to_string());
-
-        let lr = latest
-            .learning_rate
-            .map(|v| format!("{:.2e}", v))
-            .unwrap_or_else(|| "N/A".to_string());
-        let run_duration = app
-            .selected_run_elapsed()
-            .map(format_duration)
-            .unwrap_or_else(|| "N/A".to_string());
-        let active_runs = app.active_run_count();
-
-        let content = vec![
-            Line::from(format!("Step: {:<8} Loss: {:<8} LR: {}", step, loss, lr)),
-            Line::from(format!(
-                "Run time: {:<8} Active runs: {}",
-                run_duration, active_runs
-            )),
-            Line::from(Span::styled(
-                if is_focused {
-                    "[Press Enter to view the current run]"
-                } else {
-                    ""
-                },
-                Style::default().fg(palette.muted),
-            )),
-        ];
-
-        let paragraph = Paragraph::new(content)
-            .block(block)
-            .style(Style::default().fg(palette.header_fg));
-        frame.render_widget(paragraph, area);
-    } else {
-        let message = "No metrics received yet. Focus Runs to browse stored runs.";
+    let Some(record) = app.selected_run_record() else {
+        let message = "No run selected. Focus Runs to choose a run, then press Enter to open it.";
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let paragraph = Paragraph::new(message)
             .style(Style::default().fg(palette.muted))
-            .alignment(Alignment::Center);
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
         frame.render_widget(paragraph, centered_text_area(inner, message));
+        return;
+    };
+
+    let (status_text, status_color) = match record.status {
+        RunStatus::Active => ("ACTIVE", palette.success),
+        RunStatus::Completed => ("COMPLETED", palette.accent),
+        RunStatus::Failed => ("FAILED", palette.error),
+    };
+
+    let step = record
+        .last_step
+        .map(format_step)
+        .unwrap_or_else(|| "-".to_string());
+    let started = format_epoch_date(record.started_at_epoch_secs);
+    let duration = app
+        .selected_run_elapsed()
+        .map(format_duration)
+        .unwrap_or_else(|| "-".to_string());
+    let latest_loss = app
+        .selected_run_live_loss()
+        .map(|value| format!("{value:.4}"))
+        .unwrap_or_else(|| "-".to_string());
+    let source = record.source_locator.as_deref().unwrap_or("-");
+    let source_line = if source.len() > 48 {
+        format!("{}...", &source[..45])
+    } else {
+        source.to_string()
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Run ", Style::default().fg(palette.muted)),
+            Span::styled(
+                run_display_name(record),
+                Style::default()
+                    .fg(palette.header_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("Status ", Style::default().fg(palette.muted)),
+            Span::styled(
+                status_text,
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(format!("Started {started}   Duration {duration}")),
+        Line::from(format!("Step {step}   Latest loss {latest_loss}")),
+        Line::from(format!("Source {source_line}")),
+    ];
+
+    if !record.tags.is_empty() {
+        lines.push(Line::from(format!("Tags {}", record.tags.join(", "))));
     }
+
+    if let Some(overlay) = app.compare_run_display_name() {
+        lines.push(Line::from(format!("Overlay {overlay}")));
+    }
+
+    lines.push(Line::from(Span::styled(
+        if is_focused {
+            "Enter opens the selected run from Runs"
+        } else {
+            "Selection follows the Runs panel"
+        },
+        Style::default().fg(palette.muted),
+    )));
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().fg(palette.header_fg))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
 }
 
 fn render_alerts(
